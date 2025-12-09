@@ -25,6 +25,7 @@ from components.plots import (
     create_cd_plot, create_capacity_voltage_plot, create_dqdv_plot,
     create_cycle_summary_plot, COLORS
 )
+from components.styles import inject_custom_css as inject_external_css
 from utils.helpers import (
     calculate_capacity, calculate_dqdv, split_charge_discharge,
     calculate_coulombic_efficiency
@@ -83,25 +84,7 @@ def initialize_session_state():
 
 def inject_custom_css():
     """Inject custom CSS for better UI"""
-    st.markdown("""
-    <style>
-    .sidebar-title {
-        font-size: 1.5rem;
-        font-weight: bold;
-        margin-bottom: 1rem;
-        color: #1f77b4;
-    }
-    .stButton > button {
-        width: 100%;
-    }
-    .metric-card {
-        background-color: #f0f2f6;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin-bottom: 0.5rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    inject_external_css(st)
 
 
 def sidebar_header():
