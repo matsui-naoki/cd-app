@@ -1323,6 +1323,381 @@ def create_multi_file_vq_plot(
     return fig
 
 
+def create_bode_plot(
+    eis_data: List[Dict],
+    settings: dict = None,
+    plot_type: str = 'both'
+) -> go.Figure:
+    """
+    Create Bode plot (frequency response) from EIS data
+    Shows |Z| vs frequency and Phase vs frequency
+
+    Parameters
+    ----------
+    eis_data : list
+        List of EIS data dictionaries with 'freq', 'Z_real', 'Z_imag'
+    settings : dict
+        Plot settings
+    plot_type : str
+        'impedance', 'phase', or 'both'
+
+    Returns
+    -------
+    fig : go.Figure
+        Plotly figure with Bode plot
+    """
+    if settings is None:
+        settings = {}
+
+    # Create subplots if showing both
+    if plot_type == 'both':
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.08,
+            subplot_titles=('Impedance Magnitude', 'Phase Angle')
+        )
+    else:
+        fig = go.Figure()
+
+    line_width = settings.get('line_width', 2)
+
+    for i, eis in enumerate(eis_data):
+        if 'freq' not in eis or 'Z_real' not in eis or 'Z_imag' not in eis:
+            continue
+
+        freq = eis['freq']
+        Z_real = eis['Z_real']
+        Z_imag = eis['Z_imag']
+
+        # Calculate impedance magnitude and phase
+        Z_mag = np.sqrt(Z_real**2 + Z_imag**2)
+        Z_phase = np.arctan2(-Z_imag, Z_real) * 180 / np.pi  # degrees
+
+        color = COLORS[i % len(COLORS)]
+        name = f"PEIS {eis.get('technique_index', i+1)}"
+
+        if plot_type == 'both':
+            # Impedance magnitude on row 1
+            fig.add_trace(go.Scatter(
+                x=freq,
+                y=Z_mag,
+                mode='lines+markers',
+                name=f"{name} |Z|",
+                line=dict(width=line_width, color=color),
+                marker=dict(size=4, color=color),
+                hovertemplate=f'{name}<br>f = %{{x:.2e}} Hz<br>|Z| = %{{y:.1f}} Ω<extra></extra>'
+            ), row=1, col=1)
+
+            # Phase on row 2
+            fig.add_trace(go.Scatter(
+                x=freq,
+                y=Z_phase,
+                mode='lines+markers',
+                name=f"{name} Phase",
+                line=dict(width=line_width, color=color, dash='dash'),
+                marker=dict(size=4, color=color),
+                hovertemplate=f'{name}<br>f = %{{x:.2e}} Hz<br>Phase = %{{y:.1f}}°<extra></extra>',
+                showlegend=False
+            ), row=2, col=1)
+        elif plot_type == 'impedance':
+            fig.add_trace(go.Scatter(
+                x=freq,
+                y=Z_mag,
+                mode='lines+markers',
+                name=f"{name}",
+                line=dict(width=line_width, color=color),
+                marker=dict(size=4, color=color),
+                hovertemplate=f'{name}<br>f = %{{x:.2e}} Hz<br>|Z| = %{{y:.1f}} Ω<extra></extra>'
+            ))
+        else:  # phase
+            fig.add_trace(go.Scatter(
+                x=freq,
+                y=Z_phase,
+                mode='lines+markers',
+                name=f"{name}",
+                line=dict(width=line_width, color=color),
+                marker=dict(size=4, color=color),
+                hovertemplate=f'{name}<br>f = %{{x:.2e}} Hz<br>Phase = %{{y:.1f}}°<extra></extra>'
+            ))
+
+    # Update layout
+    axis_settings = common_axis_settings(settings)
+    label_size = settings.get('axis_label_font_size', 16)
+    label_font = dict(family='Arial', color='black', size=label_size)
+    legend_font_size = settings.get('legend_font_size', 12)
+    show_legend = settings.get('show_legend', True)
+
+    if plot_type == 'both':
+        fig.update_layout(
+            **common_layout(settings),
+            height=600,
+            showlegend=show_legend,
+            legend=dict(
+                yanchor="top", y=0.99, xanchor="right", x=0.99,
+                font=dict(size=legend_font_size), bgcolor='rgba(255,255,255,0.8)'
+            )
+        )
+
+        # Update x-axis (bottom - row 2)
+        fig.update_xaxes(
+            type='log',
+            title=dict(text='Frequency / Hz', font=label_font),
+            **{k: v for k, v in axis_settings.items() if k not in ['title']},
+            row=2, col=1
+        )
+
+        # Update y-axes
+        fig.update_yaxes(
+            type='log',
+            title=dict(text='|Z| / Ω', font=label_font),
+            **{k: v for k, v in axis_settings.items() if k not in ['title']},
+            row=1, col=1
+        )
+        fig.update_yaxes(
+            title=dict(text='Phase / °', font=label_font),
+            **{k: v for k, v in axis_settings.items() if k not in ['title']},
+            row=2, col=1
+        )
+    else:
+        y_title = '|Z| / Ω' if plot_type == 'impedance' else 'Phase / °'
+        fig.update_layout(
+            **common_layout(settings),
+            height=450,
+            xaxis=dict(
+                **axis_settings,
+                type='log',
+                title=dict(text='Frequency / Hz', font=label_font),
+            ),
+            yaxis=dict(
+                **axis_settings,
+                type='log' if plot_type == 'impedance' else 'linear',
+                title=dict(text=y_title, font=label_font),
+            ),
+            showlegend=show_legend,
+            legend=dict(
+                yanchor="top", y=0.99, xanchor="right", x=0.99,
+                font=dict(size=legend_font_size), bgcolor='rgba(255,255,255,0.8)'
+            )
+        )
+
+    return fig
+
+
+def create_cumulative_capacity_plot(
+    data: Dict,
+    settings: dict = None,
+    sample_info: dict = None,
+    capacity_type: str = 'discharge'
+) -> go.Figure:
+    """
+    Create cumulative capacity plot showing total capacity delivered over cycles
+
+    Parameters
+    ----------
+    data : dict
+        Battery data dictionary with cycles
+    settings : dict
+        Plot settings
+    sample_info : dict
+        Sample information
+    capacity_type : str
+        'discharge', 'charge', or 'both'
+
+    Returns
+    -------
+    fig : go.Figure
+        Plotly figure with cumulative capacity
+    """
+    if settings is None:
+        settings = {}
+    if sample_info is None:
+        sample_info = {}
+
+    fig = go.Figure()
+
+    cycles = data.get('cycles', [])
+
+    if not cycles or len(cycles) == 0:
+        fig.add_annotation(
+            text="No cycle data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color='black')
+        )
+        return fig
+
+    # Get normalization parameters
+    capacity_unit = sample_info.get('capacity_unit', 'mAh/g')
+    mass_mg = sample_info.get('mass_mg', 10.0)
+    active_ratio = sample_info.get('active_ratio', 1.0)
+    area_cm2 = sample_info.get('area_cm2', 0.636)
+    active_mass_g = mass_mg * active_ratio / 1000  # g
+
+    cycle_numbers = []
+    cumulative_discharge = []
+    cumulative_charge = []
+
+    running_discharge = 0
+    running_charge = 0
+
+    for cycle in cycles:
+        cn = cycle.get('cycle_number', 0) + 1
+        cycle_numbers.append(cn)
+
+        # Get capacities
+        cap_charge = cycle.get('capacity_charge_mAh', 0) or 0
+        cap_discharge = cycle.get('capacity_discharge_mAh', 0) or 0
+
+        # Also check capacity_mAh from half_cycle parsing
+        if cap_discharge == 0 and 'capacity_mAh' in cycle and cycle.get('is_discharge'):
+            cap_discharge = cycle.get('capacity_mAh', 0)
+        if cap_charge == 0 and 'capacity_mAh' in cycle and cycle.get('is_charge'):
+            cap_charge = cycle.get('capacity_mAh', 0)
+
+        # Normalize based on capacity unit
+        if capacity_unit == 'mAh/g' and active_mass_g > 0:
+            cap_discharge /= active_mass_g
+            cap_charge /= active_mass_g
+        elif capacity_unit == 'mAh/cm²' and area_cm2 > 0:
+            cap_discharge /= area_cm2
+            cap_charge /= area_cm2
+
+        running_discharge += cap_discharge
+        running_charge += cap_charge
+
+        cumulative_discharge.append(running_discharge)
+        cumulative_charge.append(running_charge)
+
+    # Plot settings
+    marker_size = settings.get('marker_size', 8) if settings.get('marker_size', 0) > 0 else 8
+    line_width = settings.get('line_width', 2)
+    charge_color = settings.get('charge_color', '#E63946')
+    discharge_color = settings.get('discharge_color', '#457B9D')
+
+    if capacity_type in ('discharge', 'both'):
+        fig.add_trace(go.Scatter(
+            x=cycle_numbers,
+            y=cumulative_discharge,
+            mode='markers+lines',
+            name='Cumulative Discharge',
+            marker=dict(size=marker_size, color=discharge_color, symbol='circle'),
+            line=dict(width=line_width, color=discharge_color),
+            hovertemplate='Cycle %{x}<br>Cum. Discharge: %{y:.1f}<extra></extra>'
+        ))
+
+    if capacity_type in ('charge', 'both'):
+        fig.add_trace(go.Scatter(
+            x=cycle_numbers,
+            y=cumulative_charge,
+            mode='markers+lines',
+            name='Cumulative Charge',
+            marker=dict(size=marker_size, color=charge_color, symbol='square'),
+            line=dict(width=line_width, color=charge_color),
+            hovertemplate='Cycle %{x}<br>Cum. Charge: %{y:.1f}<extra></extra>'
+        ))
+
+    # Update layout
+    axis_settings = common_axis_settings(settings)
+    label_size = settings.get('axis_label_font_size', 16)
+    label_font = dict(family='Arial', color='black', size=label_size)
+    legend_font_size = settings.get('legend_font_size', 12)
+
+    # Set capacity label based on capacity unit
+    if capacity_unit == 'mAh/g':
+        cap_label = 'Cumulative Capacity / mAh g⁻¹'
+    else:
+        cap_label = 'Cumulative Capacity / mAh cm⁻²'
+
+    fig.update_layout(
+        **common_layout(settings),
+        height=450,
+        uirevision='cumulative_plot',
+        xaxis=dict(
+            **axis_settings,
+            title=dict(text='Cycle number', font=label_font),
+        ),
+        yaxis=dict(
+            **axis_settings,
+            title=dict(text=cap_label, font=label_font),
+        ),
+        showlegend=True,
+        legend=dict(
+            yanchor="top", y=0.99, xanchor="left", x=0.01,
+            font=dict(size=legend_font_size), bgcolor='rgba(255,255,255,0.8)'
+        )
+    )
+
+    return fig
+
+
+def apply_axis_range(fig: go.Figure, axis_range: Dict) -> go.Figure:
+    """
+    Apply custom axis ranges to a figure
+
+    Parameters
+    ----------
+    fig : go.Figure
+        Plotly figure to modify
+    axis_range : dict
+        Dictionary with 'x_min', 'x_max', 'y_min', 'y_max' (any can be None for auto)
+
+    Returns
+    -------
+    fig : go.Figure
+        Modified figure with custom axis ranges
+    """
+    x_min = axis_range.get('x_min')
+    x_max = axis_range.get('x_max')
+    y_min = axis_range.get('y_min')
+    y_max = axis_range.get('y_max')
+
+    if x_min is not None or x_max is not None:
+        fig.update_xaxes(range=[x_min, x_max])
+
+    if y_min is not None or y_max is not None:
+        fig.update_yaxes(range=[y_min, y_max])
+
+    return fig
+
+
+def apply_trace_offset(
+    fig: go.Figure,
+    x_offset: float = 0,
+    y_offset: float = 0,
+    cumulative: bool = True
+) -> go.Figure:
+    """
+    Apply offset to traces for comparison visualization
+
+    Parameters
+    ----------
+    fig : go.Figure
+        Plotly figure to modify
+    x_offset : float
+        X-axis offset between traces
+    y_offset : float
+        Y-axis offset between traces
+    cumulative : bool
+        If True, offset increases for each trace
+
+    Returns
+    -------
+    fig : go.Figure
+        Modified figure with offset traces
+    """
+    for i, trace in enumerate(fig.data):
+        offset_multiplier = i if cumulative else 1
+
+        if hasattr(trace, 'x') and trace.x is not None:
+            trace.x = np.array(trace.x) + (x_offset * offset_multiplier)
+
+        if hasattr(trace, 'y') and trace.y is not None:
+            trace.y = np.array(trace.y) + (y_offset * offset_multiplier)
+
+    return fig
+
+
 def get_publication_config(width_px: int = 800, height_px: int = 600, scale: float = 2) -> dict:
     """
     Get configuration for high-resolution figure export

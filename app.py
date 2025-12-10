@@ -28,7 +28,8 @@ from tools.mps_parser import (
 from components.plots import (
     create_cd_plot, create_capacity_voltage_plot, create_dqdv_plot,
     create_cycle_summary_plot, create_capacity_retention_plot,
-    create_multi_file_vq_plot, get_publication_config, COLORS
+    create_multi_file_vq_plot, get_publication_config, COLORS,
+    create_bode_plot, create_cumulative_capacity_plot, apply_axis_range
 )
 from components.styles import inject_custom_css as inject_external_css
 from utils.helpers import (
@@ -91,6 +92,22 @@ def initialize_session_state():
         st.session_state.mps_session = None
     if 'eis_data' not in st.session_state:
         st.session_state.eis_data = []
+    # Axis range settings
+    if 'axis_range' not in st.session_state:
+        st.session_state.axis_range = {
+            'x_min': None,
+            'x_max': None,
+            'y_min': None,
+            'y_max': None,
+            'enabled': False
+        }
+    # Graph offset settings
+    if 'graph_offset' not in st.session_state:
+        st.session_state.graph_offset = {
+            'x_offset': 0.0,
+            'y_offset': 0.0,
+            'enabled': False
+        }
 
 
 def inject_custom_css():
@@ -373,11 +390,13 @@ def sidebar_view_mode():
         'dQ/dV': '📊 dQ/dV Analysis',
         'Summary': '📈 Cycle Summary',
         'Retention': '📉 Capacity Retention',
+        'Cumulative': '📊 Cumulative Capacity',
     }
 
-    # Add EIS option if data is available
+    # Add EIS options if data is available
     if st.session_state.eis_data:
         view_options['EIS'] = '🔬 EIS (Nyquist)'
+        view_options['Bode'] = '📈 EIS (Bode)'
 
     # Add Session view if MPS is loaded
     if st.session_state.mps_session:
@@ -508,6 +527,93 @@ def sidebar_plot_settings():
             value=st.session_state.plot_settings.get('show_legend', True)
         )
 
+    # Axis Range Controls (inspired by Igor IPF)
+    with st.expander("Axis Range", expanded=False):
+        st.session_state.axis_range['enabled'] = st.checkbox(
+            "Enable custom axis range",
+            value=st.session_state.axis_range.get('enabled', False)
+        )
+
+        if st.session_state.axis_range['enabled']:
+            st.caption("Y-axis (Voltage)")
+            col1, col2 = st.columns(2)
+            with col1:
+                y_min = st.number_input(
+                    "Y min",
+                    value=st.session_state.axis_range.get('y_min') or 0.0,
+                    step=0.1,
+                    format="%.2f",
+                    key="y_min_input"
+                )
+                st.session_state.axis_range['y_min'] = y_min if y_min != 0.0 or st.session_state.axis_range.get('y_min') else None
+            with col2:
+                y_max = st.number_input(
+                    "Y max",
+                    value=st.session_state.axis_range.get('y_max') or 5.0,
+                    step=0.1,
+                    format="%.2f",
+                    key="y_max_input"
+                )
+                st.session_state.axis_range['y_max'] = y_max if y_max != 5.0 or st.session_state.axis_range.get('y_max') else None
+
+            st.caption("X-axis (Time/Capacity)")
+            col3, col4 = st.columns(2)
+            with col3:
+                x_min = st.number_input(
+                    "X min",
+                    value=st.session_state.axis_range.get('x_min') or 0.0,
+                    step=1.0,
+                    format="%.1f",
+                    key="x_min_input"
+                )
+                st.session_state.axis_range['x_min'] = x_min if x_min != 0.0 or st.session_state.axis_range.get('x_min') else None
+            with col4:
+                x_max = st.number_input(
+                    "X max",
+                    value=st.session_state.axis_range.get('x_max') or 100.0,
+                    step=1.0,
+                    format="%.1f",
+                    key="x_max_input"
+                )
+                st.session_state.axis_range['x_max'] = x_max if x_max != 100.0 or st.session_state.axis_range.get('x_max') else None
+
+            if st.button("Reset to Auto", key="reset_axis"):
+                st.session_state.axis_range = {
+                    'x_min': None, 'x_max': None,
+                    'y_min': None, 'y_max': None,
+                    'enabled': False
+                }
+                st.rerun()
+
+    # Graph Offset Controls (inspired by Igor IPF)
+    with st.expander("Trace Offset", expanded=False):
+        st.caption("Apply offset between traces for better comparison")
+        st.session_state.graph_offset['enabled'] = st.checkbox(
+            "Enable trace offset",
+            value=st.session_state.graph_offset.get('enabled', False)
+        )
+
+        if st.session_state.graph_offset['enabled']:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.session_state.graph_offset['x_offset'] = st.number_input(
+                    "X offset",
+                    value=st.session_state.graph_offset.get('x_offset', 0.0),
+                    step=1.0,
+                    format="%.1f",
+                    key="x_offset_input",
+                    help="Shift traces along X-axis"
+                )
+            with col2:
+                st.session_state.graph_offset['y_offset'] = st.number_input(
+                    "Y offset",
+                    value=st.session_state.graph_offset.get('y_offset', 0.0),
+                    step=0.1,
+                    format="%.2f",
+                    key="y_offset_input",
+                    help="Shift traces along Y-axis"
+                )
+
 
 def render_main_plot():
     """Render the main plot area"""
@@ -521,6 +627,11 @@ def render_main_plot():
     # Handle EIS view
     if view_mode == 'EIS' and st.session_state.eis_data:
         render_eis_plot()
+        return
+
+    # Handle Bode plot view
+    if view_mode == 'Bode' and st.session_state.eis_data:
+        render_bode_plot()
         return
 
     # Standard CD views
@@ -569,6 +680,10 @@ def render_main_plot():
 
     elif view_mode == 'Retention':
         fig = create_capacity_retention_plot(data, settings, sample_info)
+        st.plotly_chart(fig, use_container_width=True, config=plot_config)
+
+    elif view_mode == 'Cumulative':
+        fig = create_cumulative_capacity_plot(data, settings, sample_info, capacity_type='both')
         st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
     # Show data summary
@@ -708,6 +823,41 @@ def render_eis_plot():
                 st.text(f"PEIS {eis.get('technique_index', '?')}: "
                        f"Freq range: {eis['freq'].min():.2e} - {eis['freq'].max():.2e} Hz, "
                        f"Points: {len(eis['freq'])}")
+
+
+def render_bode_plot():
+    """Render EIS Bode plot (|Z| and Phase vs Frequency)"""
+    eis_list = st.session_state.eis_data
+    settings = st.session_state.plot_settings
+
+    st.markdown("### EIS Data (Bode Plot)")
+
+    if not eis_list:
+        st.info("No EIS data available")
+        return
+
+    # Bode plot options
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        bode_type = st.selectbox(
+            "Plot type",
+            options=['both', 'impedance', 'phase'],
+            format_func=lambda x: {'both': '|Z| + Phase', 'impedance': '|Z| only', 'phase': 'Phase only'}[x],
+            index=0
+        )
+
+    # Create Bode plot
+    fig = create_bode_plot(eis_list, settings, plot_type=bode_type)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Show EIS summary table
+    with st.expander("EIS Data Summary", expanded=False):
+        for eis in eis_list:
+            if 'freq' in eis and 'Z_real' in eis and 'Z_imag' in eis:
+                Z_mag = np.sqrt(eis['Z_real']**2 + eis['Z_imag']**2)
+                st.text(f"PEIS {eis.get('technique_index', '?')}: "
+                       f"Freq: {eis['freq'].min():.2e} - {eis['freq'].max():.2e} Hz, "
+                       f"|Z|: {Z_mag.min():.1f} - {Z_mag.max():.1f} Ω")
 
 
 def render_data_summary(data, sample_info):
