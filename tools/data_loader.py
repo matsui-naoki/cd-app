@@ -1,7 +1,7 @@
 """
 Data loader module for battery charge-discharge data
 Supports BioLogic .mpt files and other common formats
-Uses galvani library for robust .mpt parsing
+Uses custom MPT loader based on bioloader patterns (https://github.com/ks250206/bioloader)
 """
 
 import numpy as np
@@ -12,7 +12,14 @@ import re
 from typing import Tuple, Optional, List, Dict, Any
 from io import StringIO
 
-# Try to import galvani for BioLogic file support
+# Import custom MPT loader (based on bioloader)
+try:
+    from .mpt_loader import load_mpt_file, load_mpt_with_cycles, MptColumn
+    HAS_MPT_LOADER = True
+except ImportError:
+    HAS_MPT_LOADER = False
+
+# Try to import galvani for BioLogic file support (fallback)
 try:
     from galvani import BioLogic
     HAS_GALVANI = True
@@ -76,7 +83,7 @@ def load_uploaded_file(uploaded_file, file_extension: str) -> Tuple[Optional[Dic
 
 def load_biologic_mpt(file_path: str) -> Tuple[Optional[Dict], Optional[str]]:
     """
-    Load BioLogic .mpt file using galvani library or custom parser
+    Load BioLogic .mpt file using custom MPT loader (based on bioloader)
 
     Parameters
     ----------
@@ -91,10 +98,24 @@ def load_biologic_mpt(file_path: str) -> Tuple[Optional[Dict], Optional[str]]:
         Error message if loading failed
     """
     try:
+        # Primary method: Use our custom MPT loader (based on bioloader patterns)
+        if HAS_MPT_LOADER:
+            data, error = load_mpt_with_cycles(file_path)
+            if data is not None:
+                # Add file_type for consistency
+                data['file_type'] = 'mpt'
+                return data, None
+            # If custom loader fails, try fallbacks
+
+        # Fallback 1: galvani library
         if HAS_GALVANI:
-            return _load_mpt_galvani(file_path)
-        else:
-            return _load_mpt_custom(file_path)
+            data, error = _load_mpt_galvani(file_path)
+            if data is not None:
+                return data, None
+
+        # Fallback 2: custom basic parser
+        return _load_mpt_custom(file_path)
+
     except Exception as e:
         return None, f"Error loading .mpt file: {str(e)}"
 
