@@ -22,7 +22,7 @@ except ImportError:
 
 def get_supported_formats() -> List[str]:
     """Return list of supported file extensions"""
-    formats = ['mpt', 'csv', 'txt']
+    formats = ['mpt', 'mpr', 'csv', 'txt']
     return formats
 
 
@@ -57,6 +57,8 @@ def load_uploaded_file(uploaded_file, file_extension: str) -> Tuple[Optional[Dic
             ext = file_extension.lower()
             if ext == '.mpt':
                 data, error = load_biologic_mpt(tmp_path)
+            elif ext == '.mpr':
+                data, error = load_biologic_mpr(tmp_path)
             elif ext in ['.csv', '.txt']:
                 data, error = load_csv_file(tmp_path)
             else:
@@ -95,6 +97,155 @@ def load_biologic_mpt(file_path: str) -> Tuple[Optional[Dict], Optional[str]]:
             return _load_mpt_custom(file_path)
     except Exception as e:
         return None, f"Error loading .mpt file: {str(e)}"
+
+
+def load_biologic_mpr(file_path: str) -> Tuple[Optional[Dict], Optional[str]]:
+    """
+    Load BioLogic .mpr file (binary format) using galvani library
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .mpr file
+
+    Returns
+    -------
+    data : dict or None
+        Dictionary with keys: time, voltage, current, capacity, cycles, etc.
+    error_message : str or None
+        Error message if loading failed
+    """
+    # Try galvani first
+    if HAS_GALVANI:
+        try:
+            data, error = _load_mpr_galvani(file_path)
+            if data is not None:
+                return data, None
+        except Exception:
+            pass  # Fall through to custom parser
+
+    # Fall back to universal mpr_parser
+    try:
+        from .mpr_parser import load_mpr_to_dict
+        mpr_data, error = load_mpr_to_dict(file_path)
+
+        if error or mpr_data is None:
+            return None, f"Error loading .mpr file: {error}"
+
+        # Convert mpr_parser format to data_loader format
+        data = {
+            'raw_df': mpr_data.get('raw_df'),
+            'columns': mpr_data.get('columns', []),
+            'file_type': 'mpr',
+        }
+
+        # Map standard column names
+        if 'time' in mpr_data:
+            data['time'] = mpr_data['time']
+        if 'voltage' in mpr_data:
+            data['voltage'] = mpr_data['voltage']
+        if 'current' in mpr_data:
+            data['current'] = mpr_data['current']
+        if 'capacity' in mpr_data:
+            data['capacity'] = mpr_data['capacity']
+        if 'half_cycle' in mpr_data:
+            data['half_cycle'] = mpr_data['half_cycle']
+        if 'cycle_number' in mpr_data:
+            data['cycle_number'] = mpr_data['cycle_number']
+
+        # EIS data
+        if 'freq' in mpr_data:
+            data['freq'] = mpr_data['freq']
+        if 'Z_real' in mpr_data:
+            data['Z_real'] = mpr_data['Z_real']
+        if 'Z_imag' in mpr_data:
+            data['Z_imag'] = mpr_data['Z_imag']
+
+        # Parse cycles
+        data['cycles'] = _parse_cycles(data)
+
+        return data, None
+
+    except Exception as e:
+        return None, f"Error loading .mpr file: {str(e)}"
+
+
+def _load_mpr_galvani(file_path: str) -> Tuple[Optional[Dict], Optional[str]]:
+    """Load .mpr file using galvani library"""
+    try:
+        mpr = BioLogic.MPRfile(file_path)
+        df = pd.DataFrame(mpr.data)
+
+        # Map column names to standard names
+        # MPR files may have different column names than MPT
+        column_mapping = {
+            'time/s': 'time',
+            'Ewe/V': 'voltage',
+            '<Ewe>/V': 'voltage',
+            'Ewe': 'voltage',
+            'I/mA': 'current',
+            '<I>/mA': 'current',
+            'control/mA': 'current',
+            'control/V/mA': 'current',  # GCPL uses this column name
+            'I': 'current',
+            'Capacity/mA.h': 'capacity',
+            'Q charge/discharge/mA.h': 'capacity',
+            '(Q-Qo)/mA.h': 'capacity',
+            'Q charge/mA.h': 'capacity',
+            'Q discharge/mA.h': 'capacity',
+            'Capacity': 'capacity',
+            'Ns': 'ns',
+            'Ns changes': 'ns_changes',
+            'ox/red': 'ox_red',
+            'cycle number': 'cycle_number',
+            'half cycle': 'half_cycle',
+            'd(Q-Qo)/dE/mA.h/V': 'dqdv',
+            'dQ/mA.h': 'dq',
+            'dq/mA.h': 'dq',
+        }
+
+        # Rename columns
+        df_renamed = df.copy()
+        for old_name, new_name in column_mapping.items():
+            if old_name in df.columns:
+                df_renamed[new_name] = df[old_name]
+
+        # Build data dictionary
+        data = {
+            'raw_df': df,  # Keep original dataframe
+            'columns': list(df.columns),
+            'file_type': 'mpr',
+        }
+
+        # Extract arrays
+        if 'time' in df_renamed.columns:
+            data['time'] = df_renamed['time'].values
+        if 'voltage' in df_renamed.columns:
+            data['voltage'] = df_renamed['voltage'].values
+        if 'current' in df_renamed.columns:
+            data['current'] = df_renamed['current'].values
+        if 'capacity' in df_renamed.columns:
+            data['capacity'] = df_renamed['capacity'].values
+        if 'dqdv' in df_renamed.columns:
+            data['dqdv'] = df_renamed['dqdv'].values
+        if 'cycle_number' in df_renamed.columns:
+            data['cycle_number'] = df_renamed['cycle_number'].values
+        if 'half_cycle' in df_renamed.columns:
+            data['half_cycle'] = df_renamed['half_cycle'].values
+        if 'ns' in df_renamed.columns:
+            data['ns'] = df_renamed['ns'].values
+        if 'ns_changes' in df_renamed.columns:
+            data['ns_changes'] = df_renamed['ns_changes'].values
+        if 'ox_red' in df_renamed.columns:
+            data['ox_red'] = df_renamed['ox_red'].values
+
+        # Parse cycles if possible
+        data['cycles'] = _parse_cycles(data)
+
+        return data, None
+
+    except Exception as e:
+        return None, f"Error loading .mpr file with galvani: {str(e)}"
 
 
 def _load_mpt_galvani(file_path: str) -> Tuple[Optional[Dict], Optional[str]]:
@@ -242,7 +393,7 @@ def _load_mpt_custom(file_path: str) -> Tuple[Optional[Dict], Optional[str]]:
 
 def _parse_cycles(data: Dict) -> List[Dict]:
     """
-    Parse data into individual charge/discharge cycles
+    Parse data into individual charge/discharge cycles (half-cycles)
 
     Parameters
     ----------
@@ -252,16 +403,61 @@ def _parse_cycles(data: Dict) -> List[Dict]:
     Returns
     -------
     cycles : list
-        List of dictionaries, one per cycle
+        List of dictionaries, one per half-cycle with is_charge/is_discharge flags
     """
     cycles = []
 
-    # Method 1: Use Ns and Ns changes columns (Biologic MB technique)
+    # Method 1: Use half_cycle column (most accurate for GCPL data)
+    if 'half_cycle' in data:
+        half_cycles = data['half_cycle']
+        unique_hc = np.unique(half_cycles[~np.isnan(half_cycles)])
+
+        for hc_num in unique_hc:
+            mask = half_cycles == hc_num
+            indices = np.where(mask)[0]
+
+            if len(indices) == 0:
+                continue
+
+            start_idx = indices[0]
+            end_idx = indices[-1] + 1
+
+            # Full cycle number = half_cycle // 2
+            cycle_num = int(hc_num) // 2
+
+            cycle_data = _extract_cycle_data(data, start_idx, end_idx, cycle_num)
+            if cycle_data:
+                # Skip short cycles (< 10 data points) - likely transition artifacts
+                n_points = len(cycle_data.get('voltage', []))
+                if n_points < 10:
+                    continue
+
+                cycle_data['half_cycle'] = int(hc_num)
+                # Determine if charge or discharge from current sign
+                if 'current' in cycle_data:
+                    avg_current = np.mean(cycle_data['current'])
+                    avg_abs_current = np.mean(np.abs(cycle_data['current']))
+                    # Skip relaxation process (low current < 0.01 mA)
+                    if avg_abs_current < 0.01:
+                        continue
+                    cycle_data['is_charge'] = avg_current > 0
+                    cycle_data['is_discharge'] = avg_current < 0
+                # Or from ox_red column (1=oxidation/charge, 0=reduction/discharge)
+                if 'ox_red' in data:
+                    ox_red = data['ox_red'][start_idx:end_idx]
+                    avg_ox_red = np.mean(ox_red)
+                    cycle_data['is_charge'] = avg_ox_red > 0.5
+                    cycle_data['is_discharge'] = avg_ox_red < 0.5
+                cycles.append(cycle_data)
+
+        return cycles
+
+    # Method 2: Use Ns and Ns changes columns (Biologic MB technique)
     if 'ns' in data and 'ns_changes' in data:
         ns = data['ns']
         ns_changes = data['ns_changes']
 
-        # Find cycle boundaries
+        # Find sequence boundaries
         change_indices = np.where(ns_changes == 1)[0]
 
         if len(change_indices) > 0:
@@ -269,6 +465,7 @@ def _parse_cycles(data: Dict) -> List[Dict]:
             boundaries = [0] + list(change_indices) + [len(ns)]
 
             cycle_num = 0
+            half_cycle_num = 0
             for i in range(len(boundaries) - 1):
                 start_idx = boundaries[i]
                 end_idx = boundaries[i + 1]
@@ -278,12 +475,21 @@ def _parse_cycles(data: Dict) -> List[Dict]:
 
                 cycle_data = _extract_cycle_data(data, start_idx, end_idx, cycle_num)
                 if cycle_data:
+                    cycle_data['half_cycle'] = half_cycle_num
+                    # Determine charge/discharge from current
+                    if 'current' in cycle_data:
+                        avg_current = np.mean(cycle_data['current'])
+                        cycle_data['is_charge'] = avg_current > 0
+                        cycle_data['is_discharge'] = avg_current < 0
                     cycles.append(cycle_data)
-                    cycle_num += 1
+                    half_cycle_num += 1
+                    # Increment cycle number every 2 half-cycles
+                    if half_cycle_num % 2 == 0:
+                        cycle_num += 1
 
             return cycles
 
-    # Method 2: Use cycle_number column
+    # Method 3: Use cycle_number column
     if 'cycle_number' in data:
         cycle_nums = data['cycle_number']
         unique_cycles = np.unique(cycle_nums[~np.isnan(cycle_nums)])
@@ -292,40 +498,101 @@ def _parse_cycles(data: Dict) -> List[Dict]:
             mask = cycle_nums == cn
             indices = np.where(mask)[0]
 
-            if len(indices) > 0:
-                start_idx = indices[0]
-                end_idx = indices[-1] + 1
+            if len(indices) == 0:
+                continue
 
-                cycle_data = _extract_cycle_data(data, start_idx, end_idx, int(cn))
-                if cycle_data:
+            start_idx = indices[0]
+            end_idx = indices[-1] + 1
+
+            cycle_data = _extract_cycle_data(data, start_idx, end_idx, int(cn))
+            if cycle_data:
+                # Split by charge/discharge if we have current data
+                if 'current' in data:
+                    current_slice = data['current'][start_idx:end_idx]
+                    charge_mask = current_slice > 0
+                    discharge_mask = current_slice < 0
+
+                    # If mixed, split into separate half-cycles
+                    if np.any(charge_mask) and np.any(discharge_mask):
+                        # Find transition point
+                        charge_indices = np.where(charge_mask)[0]
+                        discharge_indices = np.where(discharge_mask)[0]
+
+                        # Charge half-cycle
+                        if len(charge_indices) > 0:
+                            c_start = start_idx + charge_indices[0]
+                            c_end = start_idx + charge_indices[-1] + 1
+                            charge_data = _extract_cycle_data(data, c_start, c_end, int(cn))
+                            if charge_data:
+                                charge_data['is_charge'] = True
+                                charge_data['is_discharge'] = False
+                                charge_data['half_cycle'] = int(cn) * 2
+                                cycles.append(charge_data)
+
+                        # Discharge half-cycle
+                        if len(discharge_indices) > 0:
+                            d_start = start_idx + discharge_indices[0]
+                            d_end = start_idx + discharge_indices[-1] + 1
+                            discharge_data = _extract_cycle_data(data, d_start, d_end, int(cn))
+                            if discharge_data:
+                                discharge_data['is_charge'] = False
+                                discharge_data['is_discharge'] = True
+                                discharge_data['half_cycle'] = int(cn) * 2 + 1
+                                cycles.append(discharge_data)
+                    else:
+                        # Single phase
+                        cycle_data['is_charge'] = np.any(charge_mask)
+                        cycle_data['is_discharge'] = np.any(discharge_mask)
+                        cycles.append(cycle_data)
+                else:
                     cycles.append(cycle_data)
 
         return cycles
 
-    # Method 3: Use current sign changes (simple charge/discharge detection)
+    # Method 4: Use current sign changes (simple charge/discharge detection)
     if 'current' in data and 'voltage' in data:
         current = data['current']
         voltage = data['voltage']
         time = data.get('time', np.arange(len(current)))
 
-        # Find sign changes in current
-        sign_changes = np.where(np.diff(np.sign(current)) != 0)[0]
+        # Find sign changes in current (ignoring noise near zero)
+        # Use a threshold to avoid detecting noise as sign changes
+        threshold = np.max(np.abs(current)) * 0.01
+        significant_current = np.abs(current) > threshold
+        sign = np.sign(current)
+        sign[~significant_current] = 0
+
+        # Find actual sign changes
+        sign_changes = np.where(np.diff(sign) != 0)[0]
 
         if len(sign_changes) > 0:
             boundaries = [0] + list(sign_changes + 1) + [len(current)]
             cycle_num = 0
+            half_cycle_num = 0
 
-            for i in range(0, len(boundaries) - 1, 2):  # Pair charge/discharge
+            for i in range(len(boundaries) - 1):
                 start_idx = boundaries[i]
-                end_idx = boundaries[min(i + 2, len(boundaries) - 1)]
+                end_idx = boundaries[i + 1]
 
                 if end_idx <= start_idx:
                     continue
 
+                # Skip segments with mostly zero current
+                segment_current = current[start_idx:end_idx]
+                if np.mean(np.abs(segment_current)) < threshold:
+                    continue
+
                 cycle_data = _extract_cycle_data(data, start_idx, end_idx, cycle_num)
                 if cycle_data:
+                    avg_current = np.mean(segment_current)
+                    cycle_data['is_charge'] = avg_current > 0
+                    cycle_data['is_discharge'] = avg_current < 0
+                    cycle_data['half_cycle'] = half_cycle_num
                     cycles.append(cycle_data)
-                    cycle_num += 1
+                    half_cycle_num += 1
+                    # Increment cycle number every 2 half-cycles
+                    if half_cycle_num % 2 == 0:
+                        cycle_num += 1
 
             return cycles
 
@@ -333,7 +600,7 @@ def _parse_cycles(data: Dict) -> List[Dict]:
 
 
 def _extract_cycle_data(data: Dict, start_idx: int, end_idx: int, cycle_num: int) -> Optional[Dict]:
-    """Extract data for a single cycle"""
+    """Extract data for a single cycle/half-cycle"""
     cycle = {
         'cycle_number': cycle_num,
         'start_idx': start_idx,
@@ -342,7 +609,7 @@ def _extract_cycle_data(data: Dict, start_idx: int, end_idx: int, cycle_num: int
 
     # Extract arrays for this cycle
     for key in ['time', 'voltage', 'current', 'capacity', 'dqdv', 'ox_red']:
-        if key in data:
+        if key in data and data[key] is not None:
             cycle[key] = data[key][start_idx:end_idx]
 
     # Calculate capacities if possible
@@ -350,39 +617,51 @@ def _extract_cycle_data(data: Dict, start_idx: int, end_idx: int, cycle_num: int
         current = cycle['current']
         time = cycle['time']
 
-        # Separate charge and discharge by current sign
-        # In BioLogic convention: positive current = charge (for Li-ion)
-        charge_mask = current > 0
-        discharge_mask = current < 0
+        if len(current) > 1 and len(time) > 1:
+            # Calculate total capacity from current integration
+            dt = np.diff(time)
+            total_cap = np.sum(np.abs(current[:-1]) * dt) / 3600  # mA*s to mAh
+            cycle['capacity_mAh'] = total_cap
 
-        if np.any(charge_mask):
-            dt_charge = np.diff(time[charge_mask])
-            if len(dt_charge) > 0:
-                i_charge = np.abs(current[charge_mask][:-1])
-                capacity_charge = np.sum(i_charge * dt_charge) / 3600  # mA*s to mAh
-                cycle['capacity_charge_mAh'] = capacity_charge
+            # Separate charge and discharge by current sign
+            # In BioLogic convention: positive current = charge (for Li-ion)
+            charge_mask = current > 0
+            discharge_mask = current < 0
 
-        if np.any(discharge_mask):
-            dt_discharge = np.diff(time[discharge_mask])
-            if len(dt_discharge) > 0:
-                i_discharge = np.abs(current[discharge_mask][:-1])
-                capacity_discharge = np.sum(i_discharge * dt_discharge) / 3600
-                cycle['capacity_discharge_mAh'] = capacity_discharge
+            if np.any(charge_mask):
+                charge_indices = np.where(charge_mask[:-1])[0]
+                if len(charge_indices) > 0:
+                    i_charge = np.abs(current[charge_indices])
+                    dt_charge = dt[charge_indices]
+                    capacity_charge = np.sum(i_charge * dt_charge) / 3600
+                    cycle['capacity_charge_mAh'] = capacity_charge
 
-        # Coulombic efficiency
-        if 'capacity_charge_mAh' in cycle and 'capacity_discharge_mAh' in cycle:
-            if cycle['capacity_charge_mAh'] > 0:
-                cycle['coulombic_efficiency'] = (
-                    cycle['capacity_discharge_mAh'] / cycle['capacity_charge_mAh']
-                )
+            if np.any(discharge_mask):
+                discharge_indices = np.where(discharge_mask[:-1])[0]
+                if len(discharge_indices) > 0:
+                    i_discharge = np.abs(current[discharge_indices])
+                    dt_discharge = dt[discharge_indices]
+                    capacity_discharge = np.sum(i_discharge * dt_discharge) / 3600
+                    cycle['capacity_discharge_mAh'] = capacity_discharge
 
-    # Use capacity column if available
-    if 'capacity' in cycle:
-        cap = cycle['capacity']
-        if len(cap) > 0:
-            # Capacity usually resets each half-cycle
-            # Take the max capacity value
-            cycle['capacity_max_mAh'] = np.max(np.abs(cap))
+            # Coulombic efficiency
+            if 'capacity_charge_mAh' in cycle and 'capacity_discharge_mAh' in cycle:
+                if cycle['capacity_charge_mAh'] > 0:
+                    cycle['coulombic_efficiency'] = (
+                        cycle['capacity_discharge_mAh'] / cycle['capacity_charge_mAh']
+                    )
+
+    # Use capacity column if available (often more accurate)
+    if 'capacity' in cycle and len(cycle['capacity']) > 0:
+        cap = np.abs(cycle['capacity'])
+        cap_from_col = np.max(cap) - np.min(cap)
+        if cap_from_col > 0:
+            cycle['capacity_max_mAh'] = cap_from_col
+            # Update capacity values if from capacity column
+            if cycle.get('is_charge'):
+                cycle['capacity_charge_mAh'] = cap_from_col
+            elif cycle.get('is_discharge'):
+                cycle['capacity_discharge_mAh'] = cap_from_col
 
     return cycle
 

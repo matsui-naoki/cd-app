@@ -18,12 +18,17 @@ import re
 sys.path.insert(0, os.path.dirname(__file__))
 
 from tools.data_loader import (
-    load_biologic_mpt, parse_biologic_header, get_supported_formats,
+    load_biologic_mpt, load_biologic_mpr, parse_biologic_header, get_supported_formats,
     load_uploaded_file, validate_cd_data
+)
+from tools.mps_parser import (
+    parse_mps_file, get_technique_summary, load_gcpl_data_from_session,
+    load_peis_data_from_session, MeasurementSession
 )
 from components.plots import (
     create_cd_plot, create_capacity_voltage_plot, create_dqdv_plot,
-    create_cycle_summary_plot, COLORS
+    create_cycle_summary_plot, create_capacity_retention_plot,
+    create_multi_file_vq_plot, get_publication_config, COLORS
 )
 from components.styles import inject_custom_css as inject_external_css
 from utils.helpers import (
@@ -50,36 +55,42 @@ def initialize_session_state():
     if 'sample_info' not in st.session_state:
         st.session_state.sample_info = {
             'name': '',
-            'mass_mg': 10.0,  # Active material mass in mg
-            'area_cm2': 0.636,  # Electrode area in cm² (default: φ9mm)
+            'mass_mg': 10.0,  # Total cathode mass (mg)
+            'active_ratio': 0.7,  # Active material ratio (0-1)
+            'area_cm2': 0.636,  # Electrode area (cm²)
             'theoretical_capacity': 140.0,  # mAh/g
+            'capacity_unit': 'mAh/g',  # 'mAh/g' or 'mAh/cm²'
         }
     if 'plot_settings' not in st.session_state:
         st.session_state.plot_settings = {
-            # Font settings
             'tick_font_size': 14,
             'axis_label_font_size': 16,
-            # Marker/Line settings
             'line_width': 2,
-            'marker_size': 0,  # 0 means no markers
-            # Colors
+            'marker_size': 0,
             'charge_color': '#E63946',
             'discharge_color': '#457B9D',
-            # Axis labels
             'voltage_label': 'Voltage / V',
             'time_label': 'Time / h',
             'capacity_label': 'Capacity / mAh g⁻¹',
             'dqdv_label': 'dQ/dV / mAh g⁻¹ V⁻¹',
-            # Legend
             'show_legend': True,
             'legend_font_size': 12,
         }
     if 'view_mode' not in st.session_state:
-        st.session_state.view_mode = 'V-t'  # 'V-t', 'V-Q', 'dQ/dV', 'Summary'
+        st.session_state.view_mode = 'V-t'
     if 'selected_cycles' not in st.session_state:
         st.session_state.selected_cycles = []
     if 'show_all_cycles' not in st.session_state:
         st.session_state.show_all_cycles = True
+    if 'color_mode' not in st.session_state:
+        st.session_state.color_mode = 'cycle'  # 'cycle' or 'charge_discharge'
+    if 'selected_files' not in st.session_state:
+        st.session_state.selected_files = []  # For multi-file V-Q plot
+    # MPS session support
+    if 'mps_session' not in st.session_state:
+        st.session_state.mps_session = None
+    if 'eis_data' not in st.session_state:
+        st.session_state.eis_data = []
 
 
 def inject_custom_css():
@@ -106,6 +117,11 @@ def process_uploaded_files(uploaded_files):
         if base_name in st.session_state.files:
             continue
 
+        # Handle MPS files specially
+        if file_ext == '.mps':
+            process_mps_file(uploaded_file)
+            continue
+
         try:
             data, error = load_uploaded_file(uploaded_file, file_ext)
 
@@ -125,21 +141,94 @@ def process_uploaded_files(uploaded_files):
             st.error(f"Error loading {filename}: {str(e)}")
 
 
+def process_mps_file(uploaded_file):
+    """Process MPS settings file and load related data files"""
+    import tempfile
+
+    try:
+        # Save MPS file temporarily
+        bytes_data = uploaded_file.read()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # We need the original folder structure, so this won't work with just upload
+            # Instead, inform user to upload all files together
+            st.warning("MPS file detected. Please upload the entire measurement folder or use folder path input.")
+            return
+
+    except Exception as e:
+        st.error(f"Error processing MPS file: {str(e)}")
+
+
 def sidebar_file_upload():
     """File upload section"""
     st.markdown("### Upload Files")
 
-    supported_formats = get_supported_formats()
+    # Add MPS to supported formats
+    supported_formats = get_supported_formats() + ['mps']
+
     uploaded_files = st.file_uploader(
         "Upload battery data files",
         type=supported_formats,
         accept_multiple_files=True,
-        help="Supported formats: BioLogic (.mpt), CSV, TXT",
+        help="Supported: BioLogic (.mpt, .mpr, .mps), CSV, TXT",
         label_visibility="collapsed"
     )
 
     if uploaded_files:
         process_uploaded_files(uploaded_files)
+
+    # Folder path input for MPS workflow
+    st.markdown("---")
+    st.markdown("##### Or load from MPS file")
+    folder_path = st.text_input(
+        "MPS file path",
+        placeholder="/path/to/measurement.mps",
+        help="Enter full path to .mps file to auto-load measurement session"
+    )
+
+    if folder_path and folder_path.endswith('.mps'):
+        if st.button("Load MPS Session", use_container_width=True):
+            load_mps_session(folder_path)
+
+
+def load_mps_session(mps_path: str):
+    """Load measurement session from MPS file"""
+    if not os.path.exists(mps_path):
+        st.error(f"File not found: {mps_path}")
+        return
+
+    session = parse_mps_file(mps_path)
+    if session is None:
+        st.error("Failed to parse MPS file")
+        return
+
+    st.session_state.mps_session = session
+
+    # Update sample info from MPS
+    if session.sample_info:
+        if 'mass_mg' in session.sample_info and session.sample_info['mass_mg'] > 0:
+            st.session_state.sample_info['mass_mg'] = session.sample_info['mass_mg']
+        if 'electrode_area_cm2' in session.sample_info and session.sample_info['electrode_area_cm2'] > 0:
+            st.session_state.sample_info['area_cm2'] = session.sample_info['electrode_area_cm2']
+
+    # Set sample name from base name
+    st.session_state.sample_info['name'] = session.base_name
+
+    # Load GCPL data
+    gcpl_data = load_gcpl_data_from_session(session)
+    if gcpl_data:
+        st.session_state.files['GCPL_combined'] = gcpl_data
+        st.session_state.selected_file = 'GCPL_combined'
+
+    # Try to load EIS data
+    try:
+        eis_list = load_peis_data_from_session(session)
+        st.session_state.eis_data = eis_list
+    except Exception as e:
+        st.warning(f"Could not load EIS data: {e}")
+
+    st.success(f"Loaded session: {session.base_name}")
+    st.rerun()
 
 
 def sidebar_sample_info():
@@ -152,34 +241,68 @@ def sidebar_sample_info():
         placeholder="Enter sample name"
     )
 
+    # Capacity unit selection
+    capacity_unit = st.radio(
+        "Capacity unit",
+        options=['mAh/g', 'mAh/cm²'],
+        index=0 if st.session_state.sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
+        horizontal=True
+    )
+    st.session_state.sample_info['capacity_unit'] = capacity_unit
+
+    # Mass input
     col1, col2 = st.columns(2)
     with col1:
         mass = st.number_input(
-            "Active mass (mg)",
+            "Cathode mass (mg)",
             value=st.session_state.sample_info.get('mass_mg', 10.0),
             min_value=0.001,
             step=0.1,
-            format="%.3f"
+            format="%.3f",
+            help="Total cathode composite mass"
         )
         st.session_state.sample_info['mass_mg'] = mass
 
     with col2:
-        area = st.number_input(
-            "Area (cm²)",
-            value=st.session_state.sample_info.get('area_cm2', 0.636),
-            min_value=0.001,
-            step=0.01,
-            format="%.3f"
+        ratio = st.number_input(
+            "Active ratio",
+            value=st.session_state.sample_info.get('active_ratio', 0.7),
+            min_value=0.01,
+            max_value=1.0,
+            step=0.05,
+            format="%.2f",
+            help="Active material ratio in composite (0-1)"
         )
-        st.session_state.sample_info['area_cm2'] = area
+        st.session_state.sample_info['active_ratio'] = ratio
 
-    theo_cap = st.number_input(
-        "Theoretical capacity (mAh/g)",
-        value=st.session_state.sample_info.get('theoretical_capacity', 140.0),
-        min_value=1.0,
-        step=10.0
+    # Calculate and display active material mass
+    active_mass_mg = mass * ratio
+    st.caption(f"Active material: **{active_mass_mg:.3f} mg**")
+
+    # Area input
+    area = st.number_input(
+        "Electrode area (cm²)",
+        value=st.session_state.sample_info.get('area_cm2', 0.636),
+        min_value=0.001,
+        step=0.01,
+        format="%.3f",
+        help="φ9mm = 0.636 cm²"
     )
-    st.session_state.sample_info['theoretical_capacity'] = theo_cap
+    st.session_state.sample_info['area_cm2'] = area
+
+    # Calculate loading
+    loading_mg_cm2 = active_mass_mg / area
+    st.caption(f"Loading: **{loading_mg_cm2:.3f} mg/cm²**")
+
+    # Theoretical capacity (optional, collapsed by default)
+    with st.expander("Advanced settings"):
+        theo_cap = st.number_input(
+            "Theoretical capacity (mAh/g)",
+            value=st.session_state.sample_info.get('theoretical_capacity', 140.0),
+            min_value=1.0,
+            step=10.0
+        )
+        st.session_state.sample_info['theoretical_capacity'] = theo_cap
 
 
 def sidebar_file_manager():
@@ -190,28 +313,53 @@ def sidebar_file_manager():
 
     st.markdown("### Loaded Files")
 
-    for i, filename in enumerate(list(st.session_state.files.keys())):
-        is_selected = (filename == st.session_state.selected_file)
+    # Multi-select mode for V-Q view
+    view_mode = st.session_state.view_mode
+    is_vq_view = view_mode == 'V-Q'
 
-        col1, col2 = st.columns([4, 1])
+    if is_vq_view and len(st.session_state.files) > 1:
+        st.caption("Select multiple files for comparison")
+        # Multi-select checkboxes
+        selected = []
+        for i, filename in enumerate(list(st.session_state.files.keys())):
+            is_checked = filename in st.session_state.selected_files
+            if st.checkbox(filename, value=is_checked, key=f"multi_{i}"):
+                selected.append(filename)
+        st.session_state.selected_files = selected
 
-        with col1:
-            btn_type = "primary" if is_selected else "secondary"
-            if st.button(filename, key=f"select_{i}", type=btn_type, use_container_width=True):
-                st.session_state.selected_file = filename
-                st.rerun()
+        # Also update single selection to first selected
+        if selected and st.session_state.selected_file not in selected:
+            st.session_state.selected_file = selected[0]
+    else:
+        # Single selection mode
+        for i, filename in enumerate(list(st.session_state.files.keys())):
+            is_selected = (filename == st.session_state.selected_file)
 
-        with col2:
-            if st.button("✕", key=f"delete_{i}", help="Delete file"):
-                del st.session_state.files[filename]
-                if st.session_state.selected_file == filename:
-                    st.session_state.selected_file = None
-                st.rerun()
+            col1, col2 = st.columns([4, 1])
+
+            with col1:
+                btn_type = "primary" if is_selected else "secondary"
+                if st.button(filename, key=f"select_{i}", type=btn_type, use_container_width=True):
+                    st.session_state.selected_file = filename
+                    st.session_state.selected_files = [filename]
+                    st.rerun()
+
+            with col2:
+                if st.button("✕", key=f"delete_{i}", help="Delete file"):
+                    del st.session_state.files[filename]
+                    if st.session_state.selected_file == filename:
+                        st.session_state.selected_file = None
+                    if filename in st.session_state.selected_files:
+                        st.session_state.selected_files.remove(filename)
+                    st.rerun()
 
     st.markdown("---")
     if st.button("Clear All", key="clear_all", use_container_width=True):
         st.session_state.files = {}
         st.session_state.selected_file = None
+        st.session_state.selected_files = []
+        st.session_state.mps_session = None
+        st.session_state.eis_data = []
         st.rerun()
 
 
@@ -223,20 +371,109 @@ def sidebar_view_mode():
         'V-t': '⏱️ Voltage vs Time',
         'V-Q': '⚡ Voltage vs Capacity',
         'dQ/dV': '📊 dQ/dV Analysis',
-        'Summary': '📈 Cycle Summary'
+        'Summary': '📈 Cycle Summary',
+        'Retention': '📉 Capacity Retention',
     }
+
+    # Add EIS option if data is available
+    if st.session_state.eis_data:
+        view_options['EIS'] = '🔬 EIS (Nyquist)'
+
+    # Add Session view if MPS is loaded
+    if st.session_state.mps_session:
+        view_options['Session'] = '📋 Session Info'
 
     selected = st.radio(
         "Select view",
         options=list(view_options.keys()),
         format_func=lambda x: view_options[x],
-        index=list(view_options.keys()).index(st.session_state.view_mode),
+        index=list(view_options.keys()).index(st.session_state.view_mode) if st.session_state.view_mode in view_options else 0,
         label_visibility="collapsed"
     )
 
     if selected != st.session_state.view_mode:
         st.session_state.view_mode = selected
         st.rerun()
+
+
+def sidebar_cycle_selection():
+    """Cycle selection and color mode settings"""
+    # Only show for views that use cycles
+    if st.session_state.view_mode not in ['V-t', 'V-Q', 'dQ/dV']:
+        return
+
+    if st.session_state.selected_file is None:
+        return
+
+    if st.session_state.selected_file not in st.session_state.files:
+        return
+
+    data = st.session_state.files[st.session_state.selected_file]
+    cycles = data.get('cycles', [])
+
+    if not cycles:
+        return
+
+    st.markdown("### Cycle Selection")
+
+    # Get unique cycle numbers
+    cycle_numbers = sorted(set(c.get('cycle_number', 0) for c in cycles))
+    n_cycles = len(cycle_numbers)
+
+    if n_cycles == 0:
+        return
+
+    # Show all cycles checkbox
+    show_all = st.checkbox(
+        "Show all cycles",
+        value=st.session_state.show_all_cycles,
+        key='show_all_checkbox'
+    )
+    st.session_state.show_all_cycles = show_all
+
+    if not show_all:
+        # Cycle range slider
+        if n_cycles > 1:
+            cycle_range = st.slider(
+                "Cycle range",
+                min_value=min(cycle_numbers) + 1,
+                max_value=max(cycle_numbers) + 1,
+                value=(min(cycle_numbers) + 1, max(cycle_numbers) + 1),
+                step=1
+            )
+            # Convert to 0-indexed
+            st.session_state.selected_cycles = list(range(cycle_range[0] - 1, cycle_range[1]))
+        else:
+            st.session_state.selected_cycles = cycle_numbers
+    else:
+        st.session_state.selected_cycles = None  # None means all cycles
+
+    # Color mode selection (only for V-Q view)
+    if st.session_state.view_mode == 'V-Q':
+        st.markdown("##### Color mode")
+        color_options = [
+            'cycle',           # Rainbow by cycle number
+            'charge_discharge', # Red=charge, Blue=discharge
+            'first_last',      # 1st=red, middle=black, last=blue
+            'grayscale',       # Black to gray gradient
+            'single_black',    # All black (for publication)
+        ]
+        color_labels = {
+            'cycle': 'Rainbow (cycle)',
+            'charge_discharge': 'Charge(red)/Discharge(blue)',
+            'first_last': '1st=red, mid=black, last=blue',
+            'grayscale': 'Grayscale gradient',
+            'single_black': 'All black',
+        }
+        current_index = color_options.index(st.session_state.color_mode) if st.session_state.color_mode in color_options else 0
+        color_mode = st.selectbox(
+            "Color by",
+            options=color_options,
+            format_func=lambda x: color_labels.get(x, x),
+            index=current_index,
+            label_visibility="collapsed"
+        )
+        st.session_state.color_mode = color_mode
 
 
 def sidebar_plot_settings():
@@ -274,6 +511,19 @@ def sidebar_plot_settings():
 
 def render_main_plot():
     """Render the main plot area"""
+    view_mode = st.session_state.view_mode
+
+    # Handle Session Info view
+    if view_mode == 'Session' and st.session_state.mps_session:
+        render_session_info()
+        return
+
+    # Handle EIS view
+    if view_mode == 'EIS' and st.session_state.eis_data:
+        render_eis_plot()
+        return
+
+    # Standard CD views
     if st.session_state.selected_file is None:
         st.info("Select a file from the sidebar to view data")
         return
@@ -285,30 +535,179 @@ def render_main_plot():
     data = st.session_state.files[st.session_state.selected_file]
     settings = st.session_state.plot_settings
     sample_info = st.session_state.sample_info
+    selected_cycles = st.session_state.selected_cycles
+    color_mode = st.session_state.color_mode
 
     # Display file info
     st.markdown(f"### {st.session_state.selected_file}")
 
-    view_mode = st.session_state.view_mode
+    # Get plot config for export
+    plot_config = get_publication_config()
 
     if view_mode == 'V-t':
-        fig = create_cd_plot(data, settings, sample_info)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = create_cd_plot(data, settings, sample_info, selected_cycles)
+        st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
     elif view_mode == 'V-Q':
-        fig = create_capacity_voltage_plot(data, settings, sample_info)
-        st.plotly_chart(fig, use_container_width=True)
+        # Multi-file support for V-Q view
+        selected_files = st.session_state.selected_files
+        if len(selected_files) > 1:
+            # Multi-file comparison mode
+            files_data = {fn: st.session_state.files[fn] for fn in selected_files if fn in st.session_state.files}
+            fig = create_multi_file_vq_plot(files_data, settings, sample_info, selected_cycles, color_mode)
+        else:
+            fig = create_capacity_voltage_plot(data, settings, sample_info, selected_cycles, color_mode)
+        st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
     elif view_mode == 'dQ/dV':
-        fig = create_dqdv_plot(data, settings, sample_info)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = create_dqdv_plot(data, settings, sample_info, selected_cycles)
+        st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
     elif view_mode == 'Summary':
         fig = create_cycle_summary_plot(data, settings, sample_info)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config=plot_config)
+
+    elif view_mode == 'Retention':
+        fig = create_capacity_retention_plot(data, settings, sample_info)
+        st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
     # Show data summary
     render_data_summary(data, sample_info)
+
+
+def render_session_info():
+    """Render measurement session information"""
+    session = st.session_state.mps_session
+
+    st.markdown(f"### Session: {session.base_name}")
+
+    # Device info
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("##### Device Info")
+        for key, val in session.device_info.items():
+            st.text(f"{key}: {val}")
+
+    with col2:
+        st.markdown("##### Sample Info")
+        for key, val in session.sample_info.items():
+            if val:
+                st.text(f"{key}: {val}")
+
+    st.markdown("---")
+
+    # Technique table
+    st.markdown("##### Measurement History")
+    summary = get_technique_summary(session)
+    df = pd.DataFrame(summary)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Data file status
+    st.markdown("---")
+    st.markdown("##### Data Files")
+    for tech in session.techniques:
+        if tech.has_data:
+            st.markdown(f"✅ **{tech.index}. {tech.short_name}**: `{os.path.basename(tech.data_file)}`")
+        else:
+            st.markdown(f"⬜ **{tech.index}. {tech.short_name}**: No data file")
+
+
+def render_eis_plot():
+    """Render EIS Nyquist plot"""
+    eis_list = st.session_state.eis_data
+    settings = st.session_state.plot_settings
+
+    st.markdown("### EIS Data (Nyquist Plot)")
+
+    if not eis_list:
+        st.info("No EIS data available")
+        return
+
+    # Create Nyquist plot
+    fig = go.Figure()
+
+    for i, eis in enumerate(eis_list):
+        if 'Z_real' not in eis or 'Z_imag' not in eis:
+            continue
+
+        Z_real = eis['Z_real']
+        Z_imag = eis['Z_imag']
+
+        color = COLORS[i % len(COLORS)]
+        name = f"PEIS {eis.get('technique_index', i+1)}"
+
+        fig.add_trace(go.Scatter(
+            x=Z_real,
+            y=Z_imag,
+            mode='markers',
+            name=name,
+            marker=dict(
+                size=6,
+                color=color,
+                symbol='circle',
+                line=dict(width=0.5, color='black')
+            ),
+            hovertemplate="Z' = %{x:.1f} Ω<br>-Z'' = %{y:.1f} Ω<extra></extra>"
+        ))
+
+    # Calculate axis range for 1:1 aspect ratio
+    all_zr = np.concatenate([eis['Z_real'] for eis in eis_list if 'Z_real' in eis])
+    all_zi = np.concatenate([eis['Z_imag'] for eis in eis_list if 'Z_imag' in eis])
+
+    max_val = max(np.max(all_zr), np.max(all_zi)) * 1.1
+    min_val = min(0, np.min(all_zr), np.min(all_zi))
+
+    tick_size = settings.get('tick_font_size', 14)
+    label_size = settings.get('axis_label_font_size', 16)
+
+    fig.update_layout(
+        font={'family': 'Arial', 'color': 'black'},
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=500,
+        xaxis=dict(
+            title="Z' / Ω",
+            title_font=dict(size=label_size),
+            tickfont=dict(size=tick_size),
+            showgrid=False,
+            showline=True,
+            linewidth=1.5,
+            linecolor='black',
+            mirror=True,
+            ticks='inside',
+            range=[min_val, max_val],
+        ),
+        yaxis=dict(
+            title="-Z'' / Ω",
+            title_font=dict(size=label_size),
+            tickfont=dict(size=tick_size),
+            showgrid=False,
+            showline=True,
+            linewidth=1.5,
+            linecolor='black',
+            mirror=True,
+            ticks='inside',
+            scaleanchor='x',
+            scaleratio=1,
+            range=[min_val, max_val],
+        ),
+        showlegend=settings.get('show_legend', True),
+        legend=dict(
+            yanchor="top", y=0.99, xanchor="right", x=0.99,
+            font=dict(size=settings.get('legend_font_size', 12)),
+            bgcolor='rgba(255,255,255,0.8)'
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Show EIS summary table
+    with st.expander("EIS Data Summary", expanded=False):
+        for eis in eis_list:
+            if 'freq' in eis:
+                st.text(f"PEIS {eis.get('technique_index', '?')}: "
+                       f"Freq range: {eis['freq'].min():.2e} - {eis['freq'].max():.2e} Hz, "
+                       f"Points: {len(eis['freq'])}")
 
 
 def render_data_summary(data, sample_info):
@@ -318,7 +717,6 @@ def render_data_summary(data, sample_info):
             cycles = data['cycles']
             n_cycles = len(cycles)
 
-            # Calculate metrics
             mass_g = sample_info['mass_mg'] / 1000
 
             capacities_charge = []
@@ -332,6 +730,14 @@ def render_data_summary(data, sample_info):
                 if 'capacity_discharge_mAh' in cycle and cycle['capacity_discharge_mAh'] is not None:
                     cap_discharge = cycle['capacity_discharge_mAh'] / mass_g if mass_g > 0 else 0
                     capacities_discharge.append(cap_discharge)
+                # Also check capacity_mAh from half_cycle parsing
+                if 'capacity_mAh' in cycle and cycle.get('is_discharge'):
+                    cap = cycle['capacity_mAh'] / mass_g if mass_g > 0 else cycle['capacity_mAh']
+                    capacities_discharge.append(cap)
+                elif 'capacity_mAh' in cycle and cycle.get('is_charge'):
+                    cap = cycle['capacity_mAh'] / mass_g if mass_g > 0 else cycle['capacity_mAh']
+                    capacities_charge.append(cap)
+
                 if 'coulombic_efficiency' in cycle and cycle['coulombic_efficiency'] is not None:
                     efficiencies.append(cycle['coulombic_efficiency'] * 100)
 
@@ -342,11 +748,13 @@ def render_data_summary(data, sample_info):
 
             with col2:
                 if capacities_charge:
-                    st.metric("First Charge", f"{capacities_charge[0]:.1f} mAh/g")
+                    st.metric("First Charge", f"{capacities_charge[0]:.2f} mAh/g")
+                elif capacities_discharge:
+                    st.metric("First Cap", f"{capacities_discharge[0]:.4f} mAh/g")
 
             with col3:
                 if capacities_discharge:
-                    st.metric("First Discharge", f"{capacities_discharge[0]:.1f} mAh/g")
+                    st.metric("First Discharge", f"{capacities_discharge[0]:.4f} mAh/g")
 
             with col4:
                 if efficiencies:
@@ -354,11 +762,14 @@ def render_data_summary(data, sample_info):
 
         else:
             # Raw data without cycle info
-            if 'time' in data:
-                duration = data['time'][-1] - data['time'][0]
-                st.metric("Duration", f"{duration/3600:.2f} h")
-            if 'voltage' in data:
-                st.metric("Voltage Range", f"{data['voltage'].min():.3f} - {data['voltage'].max():.3f} V")
+            col1, col2 = st.columns(2)
+            with col1:
+                if 'time' in data and data['time'] is not None:
+                    duration = data['time'][-1] - data['time'][0]
+                    st.metric("Duration", f"{duration/3600:.2f} h")
+            with col2:
+                if 'voltage' in data and data['voltage'] is not None:
+                    st.metric("Voltage Range", f"{data['voltage'].min():.3f} - {data['voltage'].max():.3f} V")
 
 
 def render_export_section():
@@ -375,7 +786,6 @@ def render_export_section():
     col1, col2 = st.columns(2)
 
     with col1:
-        # CSV export
         if st.session_state.selected_file:
             data = st.session_state.files[st.session_state.selected_file]
             csv_data = generate_csv_export(data, st.session_state.sample_info)
@@ -388,7 +798,6 @@ def render_export_section():
             )
 
     with col2:
-        # Igor export
         igor_str = generate_igor_file(
             st.session_state.files,
             st.session_state.sample_info
@@ -401,22 +810,6 @@ def render_export_section():
             use_container_width=True,
             help="Igor Text File with publication-ready plots"
         )
-
-
-def export_to_csv(data):
-    """Export data to CSV format"""
-    if 'time' in data and 'voltage' in data:
-        df = pd.DataFrame({
-            'Time (s)': data['time'],
-            'Voltage (V)': data['voltage']
-        })
-        if 'current' in data:
-            df['Current (mA)'] = data['current']
-        if 'capacity' in data:
-            df['Capacity (mAh)'] = data['capacity']
-
-        return df.to_csv(index=False)
-    return ""
 
 
 def main():
@@ -434,6 +827,7 @@ def main():
         sidebar_file_manager()
         st.markdown("---")
         sidebar_view_mode()
+        sidebar_cycle_selection()
         sidebar_plot_settings()
         st.markdown("---")
         render_export_section()
