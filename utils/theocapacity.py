@@ -216,7 +216,7 @@ def calculate_molar_mass(formula: str) -> Optional[float]:
     return molar_mass
 
 
-def calculate_theoretical_capacity(formula: str, n_electrons: int = 1) -> Tuple[Optional[float], Optional[float]]:
+def calculate_theoretical_capacity(formula: str, n_electrons: float = 1.0) -> Tuple[Optional[float], Optional[float]]:
     """
     Calculate theoretical specific capacity from chemical formula.
 
@@ -226,8 +226,9 @@ def calculate_theoretical_capacity(formula: str, n_electrons: int = 1) -> Tuple[
     ----------
     formula : str
         Chemical formula of active material (e.g., 'LiCoO2', 'LiFePO4')
-    n_electrons : int
+    n_electrons : float
         Number of electrons transferred in the electrochemical reaction
+        (can be fractional, e.g., 0.5 for partial delithiation)
 
     Returns
     -------
@@ -239,13 +240,13 @@ def calculate_theoretical_capacity(formula: str, n_electrons: int = 1) -> Tuple[
     Examples
     --------
     >>> calculate_theoretical_capacity('LiCoO2', 1)
-    (137.21, 97.87)  # ~137 mAh/g
+    (273.85, 97.87)  # ~274 mAh/g
+
+    >>> calculate_theoretical_capacity('LiCoO2', 0.5)
+    (136.93, 97.87)  # ~137 mAh/g for 0.5e- (practical capacity)
 
     >>> calculate_theoretical_capacity('LiFePO4', 1)
-    (170.04, 157.76)  # ~170 mAh/g
-
-    >>> calculate_theoretical_capacity('Li2MnO3', 2)
-    (458.12, 116.82)  # ~458 mAh/g for 2e-
+    (169.89, 157.76)  # ~170 mAh/g
     """
     try:
         molar_mass = calculate_molar_mass(formula)

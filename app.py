@@ -200,41 +200,6 @@ def sidebar_file_upload():
     if uploaded_files:
         process_uploaded_files(uploaded_files)
 
-    # MPS file loading options
-    st.markdown("---")
-    st.markdown("##### MPS Session Loading")
-
-    mps_load_method = st.radio(
-        "Load method",
-        options=['path', 'upload'],
-        format_func=lambda x: 'File Path' if x == 'path' else 'File Upload',
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-
-    if mps_load_method == 'path':
-        folder_path = st.text_input(
-            "MPS file path",
-            placeholder="/path/to/measurement.mps",
-            help="Enter full path to .mps file to auto-load measurement session"
-        )
-
-        if folder_path and folder_path.endswith('.mps'):
-            if st.button("Load MPS Session", use_container_width=True):
-                load_mps_session(folder_path)
-    else:
-        # MPS file uploader - saves to temp and loads
-        mps_upload = st.file_uploader(
-            "Upload MPS file",
-            type=['mps'],
-            key='mps_uploader',
-            help="Upload .mps file (requires data files in same folder structure)"
-        )
-
-        if mps_upload:
-            st.warning("Note: MPS upload requires data files (.mpt/.mpr) to be accessible. "
-                      "For best results, use File Path method with local files.")
-
 
 def load_mps_session(mps_path: str):
     """Load measurement session from MPS file"""
@@ -285,15 +250,6 @@ def sidebar_sample_info():
         value=st.session_state.sample_info.get('name', ''),
         placeholder="Enter sample name"
     )
-
-    # Capacity unit selection
-    capacity_unit = st.radio(
-        "Capacity unit",
-        options=['mAh/g', 'mAh/cm²'],
-        index=0 if st.session_state.sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
-        horizontal=True
-    )
-    st.session_state.sample_info['capacity_unit'] = capacity_unit
 
     # Mass input
     col1, col2 = st.columns(2)
@@ -367,50 +323,57 @@ def sidebar_sample_info():
     st.caption(f"Loading: **{loading_mg_cm2:.3f} mg/cm²**")
 
     # Theoretical capacity (optional, collapsed by default)
-    with st.expander("Theoretical Capacity Calculator"):
-        # Manual input
-        theo_cap = st.number_input(
-            "Theoretical capacity (mAh/g)",
-            value=st.session_state.sample_info.get('theoretical_capacity', 140.0),
-            min_value=1.0,
-            step=10.0
-        )
-        st.session_state.sample_info['theoretical_capacity'] = theo_cap
-
-        st.markdown("---")
-        st.caption("Or calculate from composition:")
-
+    with st.expander("Theoretical Capacity"):
+        # Formula input first
         composition = st.text_input(
-            "Composition formula",
+            "Formula",
             value=st.session_state.sample_info.get('composition', ''),
             placeholder="e.g., LiCoO2, LiFePO4",
-            help="Enter chemical formula of active material"
+            help="Q = nF / (M × 3.6) [mAh/g], where n = reaction electrons, F = 96485 C/mol, M = molar mass"
         )
         st.session_state.sample_info['composition'] = composition
 
+        # Number of reaction electrons (float support)
         electron_n = st.number_input(
-            "Reaction electrons (n)",
-            value=st.session_state.sample_info.get('electron_number', 1),
-            min_value=1,
-            max_value=10,
-            step=1,
-            help="Number of electrons transferred in redox reaction"
+            "Number of reaction electrons",
+            value=float(st.session_state.sample_info.get('electron_number', 1.0)),
+            min_value=0.1,
+            max_value=10.0,
+            step=0.1,
+            format="%.1f",
+            help="Number of electrons transferred in redox reaction (e.g., 0.5, 1, 2)"
         )
         st.session_state.sample_info['electron_number'] = electron_n
 
+        # Calculate button
         if composition:
-            try:
-                from utils.theocapacity import calculate_theoretical_capacity
-                calc_cap, molar_mass = calculate_theoretical_capacity(composition, electron_n)
-                if calc_cap is not None:
-                    st.success(f"**{calc_cap:.2f} mAh/g** (M = {molar_mass:.2f} g/mol)")
-                    if st.button("Apply calculated value"):
+            if st.button("Calculate", use_container_width=True):
+                try:
+                    from utils.theocapacity import calculate_theoretical_capacity
+                    calc_cap, molar_mass = calculate_theoretical_capacity(composition, electron_n)
+                    if calc_cap is not None:
                         st.session_state.sample_info['theoretical_capacity'] = calc_cap
+                        st.session_state.sample_info['calculated_molar_mass'] = molar_mass
                         st.rerun()
-            except ImportError:
-                st.warning("theocapacity module not available")
-            except Exception as e:
-                st.error(f"Calculation error: {e}")
+                except ImportError:
+                    st.error("theocapacity module not available")
+                except Exception as e:
+                    st.error(f"Calculation error: {e}")
+
+        # Show calculated or manual theoretical capacity
+        theo_cap = st.number_input(
+            "Theoretical capacity (mAh/g)",
+            value=st.session_state.sample_info.get('theoretical_capacity', 140.0),
+            min_value=0.1,
+            step=10.0,
+            format="%.1f"
+        )
+        st.session_state.sample_info['theoretical_capacity'] = theo_cap
+
+        # Show molar mass if calculated
+        if 'calculated_molar_mass' in st.session_state.sample_info:
+            mw = st.session_state.sample_info['calculated_molar_mass']
+            st.caption(f"Molar mass: {mw:.2f} g/mol")
 
 
 def sidebar_file_manager():
@@ -479,16 +442,14 @@ def sidebar_view_mode():
         'V-t': '⏱️ Voltage vs Time',
         'V-Q': '⚡ Voltage vs Capacity',
         'dQ/dV': '📊 dQ/dV Analysis',
+        'CV/LSV': '📈 CV / LSV',
         'Summary': '📈 Cycle Summary',
         'Retention': '📉 Capacity Retention',
         'Cumulative': '📊 Cumulative Capacity',
+        'Nyquist': '🔬 Nyquist Plot',
+        'Bode': '📈 Bode Plot',
         'DataFrame': '📋 Data Table',
     }
-
-    # Add EIS options if data is available
-    if st.session_state.eis_data:
-        view_options['Nyquist'] = '🔬 EIS (Nyquist)'
-        view_options['Bode'] = '📈 EIS (Bode)'
 
     # Add Session view if MPS is loaded
     if st.session_state.mps_session:
@@ -717,18 +678,23 @@ def render_main_plot():
         return
 
     # Handle Nyquist view (EIS)
-    if view_mode == 'Nyquist' and st.session_state.eis_data:
+    if view_mode == 'Nyquist':
         render_nyquist_plot()
         return
 
     # Handle Bode plot view
-    if view_mode == 'Bode' and st.session_state.eis_data:
+    if view_mode == 'Bode':
         render_bode_plot()
         return
 
     # Handle DataFrame view
     if view_mode == 'DataFrame':
         render_dataframe_view()
+        return
+
+    # Handle CV/LSV view
+    if view_mode == 'CV/LSV':
+        render_cv_lsv_plot()
         return
 
     # Standard CD views
@@ -767,6 +733,19 @@ def render_main_plot():
             fig = create_capacity_voltage_plot(data, settings, sample_info, selected_cycles, color_mode)
         st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
+        # Capacity unit selection below the plot
+        st.markdown("---")
+        capacity_unit = st.radio(
+            "Capacity unit",
+            options=['mAh/g', 'mAh/cm²'],
+            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
+            horizontal=True,
+            key='capacity_unit_vq'
+        )
+        if capacity_unit != sample_info.get('capacity_unit'):
+            st.session_state.sample_info['capacity_unit'] = capacity_unit
+            st.rerun()
+
     elif view_mode == 'dQ/dV':
         fig = create_dqdv_plot(data, settings, sample_info, selected_cycles)
         st.plotly_chart(fig, use_container_width=True, config=plot_config)
@@ -775,13 +754,52 @@ def render_main_plot():
         fig = create_cycle_summary_plot(data, settings, sample_info)
         st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
+        # Capacity unit selection below the plot
+        st.markdown("---")
+        capacity_unit = st.radio(
+            "Capacity unit",
+            options=['mAh/g', 'mAh/cm²'],
+            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
+            horizontal=True,
+            key='capacity_unit_summary'
+        )
+        if capacity_unit != sample_info.get('capacity_unit'):
+            st.session_state.sample_info['capacity_unit'] = capacity_unit
+            st.rerun()
+
     elif view_mode == 'Retention':
         fig = create_capacity_retention_plot(data, settings, sample_info)
         st.plotly_chart(fig, use_container_width=True, config=plot_config)
 
+        # Capacity unit selection below the plot
+        st.markdown("---")
+        capacity_unit = st.radio(
+            "Capacity unit",
+            options=['mAh/g', 'mAh/cm²'],
+            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
+            horizontal=True,
+            key='capacity_unit_retention'
+        )
+        if capacity_unit != sample_info.get('capacity_unit'):
+            st.session_state.sample_info['capacity_unit'] = capacity_unit
+            st.rerun()
+
     elif view_mode == 'Cumulative':
         fig = create_cumulative_capacity_plot(data, settings, sample_info, capacity_type='both')
         st.plotly_chart(fig, use_container_width=True, config=plot_config)
+
+        # Capacity unit selection below the plot
+        st.markdown("---")
+        capacity_unit = st.radio(
+            "Capacity unit",
+            options=['mAh/g', 'mAh/cm²'],
+            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
+            horizontal=True,
+            key='capacity_unit_cumulative'
+        )
+        if capacity_unit != sample_info.get('capacity_unit'):
+            st.session_state.sample_info['capacity_unit'] = capacity_unit
+            st.rerun()
 
     # Show data summary
     render_data_summary(data, sample_info)
@@ -837,15 +855,53 @@ def render_dataframe_view():
     data = st.session_state.files[st.session_state.selected_file]
     st.markdown(f"### Data Table: {st.session_state.selected_file}")
 
-    # Check if we have raw dataframe
-    if 'df' in data and data['df'] is not None:
-        df = data['df']
-        st.dataframe(df, use_container_width=True, height=500)
-
-        # Data info
+    # Priority 1: raw_df from mpt_loader
+    if 'raw_df' in data and data['raw_df'] is not None:
+        df = data['raw_df']
+        st.dataframe(df, use_container_width=True, height=600)
         st.caption(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+        st.caption(f"Columns: {', '.join(df.columns.tolist())}")
 
         # Download CSV button
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            "Download CSV",
+            data=csv_data,
+            file_name=f"{st.session_state.selected_file}_raw.csv",
+            mime="text/csv"
+        )
+        return
+
+    # Priority 2: df from other loaders
+    if 'df' in data and data['df'] is not None:
+        df = data['df']
+        st.dataframe(df, use_container_width=True, height=600)
+        st.caption(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+        st.caption(f"Columns: {', '.join(df.columns.tolist())}")
+
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            "Download CSV",
+            data=csv_data,
+            file_name=f"{st.session_state.selected_file}_data.csv",
+            mime="text/csv"
+        )
+        return
+
+    # Priority 3: Build from arrays
+    df_dict = {}
+    array_keys = ['time', 'voltage', 'current', 'capacity', 'ns', 'cycle_number',
+                  'freq', 're_z', 'im_z', 'z_abs', 'phase_z']
+
+    for key in array_keys:
+        if key in data and data[key] is not None:
+            df_dict[key] = data[key]
+
+    if df_dict:
+        df = pd.DataFrame(df_dict)
+        st.dataframe(df, use_container_width=True, height=600)
+        st.caption(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+
         csv_data = df.to_csv(index=False)
         st.download_button(
             "Download CSV",
@@ -854,62 +910,7 @@ def render_dataframe_view():
             mime="text/csv"
         )
     else:
-        # Build DataFrame from available data
-        df_dict = {}
-
-        # Add time if available
-        if 'time' in data and data['time'] is not None:
-            df_dict['time (s)'] = data['time']
-
-        # Add voltage if available
-        if 'voltage' in data and data['voltage'] is not None:
-            df_dict['voltage (V)'] = data['voltage']
-
-        # Add current if available
-        if 'current' in data and data['current'] is not None:
-            df_dict['current (mA)'] = data['current']
-
-        # Add capacity if available
-        if 'capacity' in data and data['capacity'] is not None:
-            df_dict['capacity (mAh)'] = data['capacity']
-
-        if df_dict:
-            df = pd.DataFrame(df_dict)
-            st.dataframe(df, use_container_width=True, height=500)
-            st.caption(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
-
-            # Download button
-            csv_data = df.to_csv(index=False)
-            st.download_button(
-                "Download CSV",
-                data=csv_data,
-                file_name=f"{st.session_state.selected_file}_data.csv",
-                mime="text/csv"
-            )
-        else:
-            st.warning("No raw data available for this file")
-
-    # Show cycle information if available
-    if 'cycles' in data and data['cycles']:
-        with st.expander("Cycle Data", expanded=False):
-            cycles = data['cycles']
-            cycle_info = []
-            for i, cycle in enumerate(cycles):
-                info = {
-                    'Cycle': cycle.get('cycle_number', i) + 1,
-                    'Charge (mAh)': cycle.get('capacity_charge_mAh', None),
-                    'Discharge (mAh)': cycle.get('capacity_discharge_mAh', None),
-                    'CE (%)': cycle.get('coulombic_efficiency', None),
-                }
-                # Filter None values
-                info = {k: v for k, v in info.items() if v is not None}
-                if 'CE (%)' in info and info['CE (%)'] is not None:
-                    info['CE (%)'] = info['CE (%)'] * 100
-                cycle_info.append(info)
-
-            if cycle_info:
-                cycle_df = pd.DataFrame(cycle_info)
-                st.dataframe(cycle_df, use_container_width=True)
+        st.warning("No raw data available for this file")
 
 
 def render_nyquist_plot():
@@ -1043,6 +1044,110 @@ def render_bode_plot():
                 st.text(f"PEIS {eis.get('technique_index', '?')}: "
                        f"Freq: {eis['freq'].min():.2e} - {eis['freq'].max():.2e} Hz, "
                        f"|Z|: {Z_mag.min():.1f} - {Z_mag.max():.1f} Ω")
+
+
+def render_cv_lsv_plot():
+    """Render CV/LSV plot (Current vs Voltage)"""
+    if st.session_state.selected_file is None:
+        st.info("Select a file from the sidebar to view data")
+        return
+
+    if st.session_state.selected_file not in st.session_state.files:
+        st.warning("Selected file not found")
+        return
+
+    data = st.session_state.files[st.session_state.selected_file]
+    settings = st.session_state.plot_settings
+    sample_info = st.session_state.sample_info
+
+    st.markdown(f"### CV/LSV: {st.session_state.selected_file}")
+
+    # Check if we have voltage and current data
+    if 'voltage' not in data or 'current' not in data:
+        st.warning("No voltage/current data available for CV/LSV plot")
+        return
+
+    voltage = data['voltage']
+    current = data['current']
+
+    if voltage is None or current is None:
+        st.warning("Voltage or current data is missing")
+        return
+
+    # Normalize current to current density if area is available
+    area = sample_info.get('area_cm2', 1.0)
+
+    # Current density option
+    use_density = st.checkbox("Show current density (mA/cm²)", value=True)
+
+    if use_density:
+        current_display = current / area
+        y_label = 'Current density / mA cm⁻²'
+    else:
+        current_display = current
+        y_label = 'Current / mA'
+
+    # Create figure
+    fig = go.Figure()
+
+    tick_size = settings.get('tick_font_size', 22)
+    label_size = settings.get('axis_label_font_size', 22)
+    line_width = settings.get('line_width', 1)
+
+    fig.add_trace(go.Scatter(
+        x=voltage,
+        y=current_display,
+        mode='lines',
+        line=dict(width=line_width, color='#1f77b4'),
+        hovertemplate='E = %{x:.3f} V<br>I = %{y:.3f}<extra></extra>'
+    ))
+
+    fig.update_layout(
+        font={'family': 'Arial', 'color': 'black'},
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=500,
+        xaxis=dict(
+            title="Potential / V",
+            title_font=dict(size=label_size),
+            tickfont=dict(size=tick_size),
+            showgrid=False,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True,
+            ticks='inside',
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor='gray',
+        ),
+        yaxis=dict(
+            title=y_label,
+            title_font=dict(size=label_size),
+            tickfont=dict(size=tick_size),
+            showgrid=False,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True,
+            ticks='inside',
+            zeroline=True,
+            zerolinewidth=1,
+            zerolinecolor='gray',
+        ),
+        showlegend=False,
+    )
+
+    plot_config = get_publication_config()
+    st.plotly_chart(fig, use_container_width=True, config=plot_config)
+
+    # Data summary
+    with st.expander("CV/LSV Data Summary", expanded=False):
+        st.text(f"Voltage range: {voltage.min():.3f} - {voltage.max():.3f} V")
+        st.text(f"Current range: {current.min():.3f} - {current.max():.3f} mA")
+        if use_density:
+            st.text(f"Current density range: {current_display.min():.3f} - {current_display.max():.3f} mA/cm²")
+        st.text(f"Data points: {len(voltage)}")
 
 
 def render_data_summary(data, sample_info):
