@@ -243,7 +243,10 @@ def _parse_cycles_from_mpt(data: Dict) -> List[Dict]:
     Parse cycle information from MPT data
 
     Uses half_cycle column if available, otherwise falls back to
-    cycle_number or Ns columns
+    cycle_number or Ns columns.
+
+    Also splits on current=0 (relaxation periods) and excludes
+    data points where current is effectively zero.
     """
     cycles = []
 
@@ -269,23 +272,38 @@ def _parse_cycles_from_mpt(data: Dict) -> List[Dict]:
             if cycle:
                 cycle['half_cycle'] = int(hc_num)
                 _determine_charge_discharge(cycle)
-                cycles.append(cycle)
+                # Skip relaxation periods (current ~0)
+                if not cycle.get('is_relaxation', False):
+                    cycles.append(cycle)
 
         return cycles
 
     # Method 2: Use Ns column with diff() method (bioloader pattern)
-    # This detects changes in Ns value to identify cycle boundaries
+    # Also add current=0 detection for additional splitting
     if 'ns' in data and data['ns'] is not None:
         ns = data['ns']
 
         # bioloader pattern: detect where Ns changes
-        # df[split_column].diff().fillna(0) != 0
         ns_diff = np.diff(ns, prepend=ns[0])
-        change_indices = np.where(ns_diff != 0)[0]
+        ns_change_indices = set(np.where(ns_diff != 0)[0])
 
-        if len(change_indices) > 0:
-            boundaries = [0] + list(change_indices) + [len(ns)]
+        # Also detect current=0 boundaries (relaxation periods)
+        current_change_indices = set()
+        if 'current' in data and data['current'] is not None:
+            current = data['current']
+            # Detect transitions to/from zero current
+            # Consider "zero" as |current| < threshold (0.01 mA)
+            is_zero = np.abs(current) < 0.01
+            zero_transitions = np.diff(is_zero.astype(int))
+            current_change_indices = set(np.where(zero_transitions != 0)[0] + 1)
 
+        # Combine all boundaries
+        all_change_indices = sorted(ns_change_indices | current_change_indices)
+
+        if len(all_change_indices) > 0:
+            boundaries = [0] + list(all_change_indices) + [len(ns)]
+
+            half_cycle_counter = 0
             for i in range(len(boundaries) - 1):
                 start_idx = boundaries[i]
                 end_idx = boundaries[i + 1]
@@ -293,23 +311,38 @@ def _parse_cycles_from_mpt(data: Dict) -> List[Dict]:
                 if end_idx - start_idx < 10:
                     continue
 
-                cycle_num = i // 2
+                cycle_num = half_cycle_counter // 2
                 cycle = _extract_cycle_data(data, start_idx, end_idx, cycle_num)
                 if cycle:
-                    cycle['half_cycle'] = i
+                    cycle['half_cycle'] = half_cycle_counter
                     _determine_charge_discharge(cycle)
-                    cycles.append(cycle)
+
+                    # Skip relaxation periods (current ~0)
+                    if not cycle.get('is_relaxation', False):
+                        cycles.append(cycle)
+                        half_cycle_counter += 1
 
             return cycles
 
     # Method 2b: Use Ns changes column if available
     if 'ns_changes' in data and data['ns_changes'] is not None:
         ns_changes = data['ns_changes']
-        change_indices = np.where(ns_changes == 1)[0]
+        ns_change_indices = set(np.where(ns_changes == 1)[0])
 
-        if len(change_indices) > 0:
-            boundaries = [0] + list(change_indices) + [len(ns_changes)]
+        # Also detect current=0 boundaries
+        current_change_indices = set()
+        if 'current' in data and data['current'] is not None:
+            current = data['current']
+            is_zero = np.abs(current) < 0.01
+            zero_transitions = np.diff(is_zero.astype(int))
+            current_change_indices = set(np.where(zero_transitions != 0)[0] + 1)
 
+        all_change_indices = sorted(ns_change_indices | current_change_indices)
+
+        if len(all_change_indices) > 0:
+            boundaries = [0] + list(all_change_indices) + [len(ns_changes)]
+
+            half_cycle_counter = 0
             for i in range(len(boundaries) - 1):
                 start_idx = boundaries[i]
                 end_idx = boundaries[i + 1]
@@ -317,12 +350,15 @@ def _parse_cycles_from_mpt(data: Dict) -> List[Dict]:
                 if end_idx - start_idx < 10:
                     continue
 
-                cycle_num = i // 2
+                cycle_num = half_cycle_counter // 2
                 cycle = _extract_cycle_data(data, start_idx, end_idx, cycle_num)
                 if cycle:
-                    cycle['half_cycle'] = i
+                    cycle['half_cycle'] = half_cycle_counter
                     _determine_charge_discharge(cycle)
-                    cycles.append(cycle)
+
+                    if not cycle.get('is_relaxation', False):
+                        cycles.append(cycle)
+                        half_cycle_counter += 1
 
             return cycles
 
@@ -511,3 +547,93 @@ def load_mpt_with_cycles(filepath: str | Path) -> Tuple[Optional[Dict], Optional
                 }]
 
     return data, None
+
+
+def is_impedance_data(data: Dict) -> bool:
+    """
+    Detect if loaded data contains impedance (EIS) measurements
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_mpt_file
+
+    Returns
+    -------
+    is_eis : bool
+        True if data contains impedance data
+    """
+    # Check technique type
+    technique = data.get('technique', '').upper()
+    if 'PEIS' in technique or 'GEIS' in technique or 'EIS' in technique:
+        return True
+
+    # Check for EIS columns
+    eis_columns = ['freq', 're_z', 'im_z', 'z_abs', 'phase_z']
+    has_eis_cols = any(col in data and data[col] is not None for col in eis_columns)
+
+    # Check raw_df for EIS columns
+    if 'raw_df' in data:
+        df = data['raw_df']
+        eis_df_cols = ['freq/Hz', 'Re(Z)/Ohm', '-Im(Z)/Ohm', '|Z|/Ohm', 'Phase(Z)/deg']
+        has_eis_cols = has_eis_cols or any(col in df.columns for col in eis_df_cols)
+
+    return has_eis_cols
+
+
+def is_charge_discharge_data(data: Dict) -> bool:
+    """
+    Detect if loaded data contains charge-discharge (GCPL) measurements
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_mpt_file
+
+    Returns
+    -------
+    is_cd : bool
+        True if data contains charge-discharge data
+    """
+    # Check technique type
+    technique = data.get('technique', '').upper()
+    if 'GCPL' in technique or 'CCCV' in technique or 'MB' in technique:
+        return True
+
+    # Check for CD columns
+    cd_columns = ['time', 'voltage', 'current', 'capacity']
+    has_cd_cols = sum(1 for col in cd_columns if col in data and data[col] is not None) >= 3
+
+    # Check for cycle data
+    has_cycles = 'cycles' in data and len(data.get('cycles', [])) > 0
+
+    return has_cd_cols or has_cycles
+
+
+def detect_data_type(data: Dict) -> str:
+    """
+    Detect the type of measurement data
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_mpt_file
+
+    Returns
+    -------
+    data_type : str
+        One of: 'EIS', 'CD' (charge-discharge), 'CV', 'OCV', 'Unknown'
+    """
+    if is_impedance_data(data):
+        return 'EIS'
+
+    if is_charge_discharge_data(data):
+        return 'CD'
+
+    technique = data.get('technique', '').upper()
+    if 'CV' in technique or 'CYCLIC' in technique:
+        return 'CV'
+    if 'OCV' in technique or 'OPEN CIRCUIT' in technique:
+        return 'OCV'
+
+    return 'Unknown'

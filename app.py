@@ -58,15 +58,21 @@ def initialize_session_state():
             'name': '',
             'mass_mg': 10.0,  # Total cathode mass (mg)
             'active_ratio': 0.7,  # Active material ratio (0-1)
-            'area_cm2': 0.636,  # Electrode area (cm²)
+            'area_cm2': 1.0,  # Electrode area (cm²) - default 1.0
+            'diameter_cm': 1.0,  # Electrode diameter (cm) - default 1.0
+            'area_input_mode': 'area',  # 'area' or 'diameter'
             'theoretical_capacity': 140.0,  # mAh/g
             'capacity_unit': 'mAh/g',  # 'mAh/g' or 'mAh/cm²'
+            # Theoretical capacity calculator fields
+            'composition': '',  # e.g., 'LiCoO2'
+            'electron_number': 1,  # Number of electrons in reaction
         }
     if 'plot_settings' not in st.session_state:
         st.session_state.plot_settings = {
-            'tick_font_size': 14,
-            'axis_label_font_size': 16,
-            'line_width': 2,
+            'tick_font_size': 22,
+            'axis_label_font_size': 22,
+            'axis_line_width': 1,
+            'line_width': 1,
             'marker_size': 0,
             'charge_color': '#E63946',
             'discharge_color': '#457B9D',
@@ -194,18 +200,40 @@ def sidebar_file_upload():
     if uploaded_files:
         process_uploaded_files(uploaded_files)
 
-    # Folder path input for MPS workflow
+    # MPS file loading options
     st.markdown("---")
-    st.markdown("##### Or load from MPS file")
-    folder_path = st.text_input(
-        "MPS file path",
-        placeholder="/path/to/measurement.mps",
-        help="Enter full path to .mps file to auto-load measurement session"
+    st.markdown("##### MPS Session Loading")
+
+    mps_load_method = st.radio(
+        "Load method",
+        options=['path', 'upload'],
+        format_func=lambda x: 'File Path' if x == 'path' else 'File Upload',
+        horizontal=True,
+        label_visibility="collapsed"
     )
 
-    if folder_path and folder_path.endswith('.mps'):
-        if st.button("Load MPS Session", use_container_width=True):
-            load_mps_session(folder_path)
+    if mps_load_method == 'path':
+        folder_path = st.text_input(
+            "MPS file path",
+            placeholder="/path/to/measurement.mps",
+            help="Enter full path to .mps file to auto-load measurement session"
+        )
+
+        if folder_path and folder_path.endswith('.mps'):
+            if st.button("Load MPS Session", use_container_width=True):
+                load_mps_session(folder_path)
+    else:
+        # MPS file uploader - saves to temp and loads
+        mps_upload = st.file_uploader(
+            "Upload MPS file",
+            type=['mps'],
+            key='mps_uploader',
+            help="Upload .mps file (requires data files in same folder structure)"
+        )
+
+        if mps_upload:
+            st.warning("Note: MPS upload requires data files (.mpt/.mpr) to be accessible. "
+                      "For best results, use File Path method with local files.")
 
 
 def load_mps_session(mps_path: str):
@@ -296,23 +324,51 @@ def sidebar_sample_info():
     active_mass_mg = mass * ratio
     st.caption(f"Active material: **{active_mass_mg:.3f} mg**")
 
-    # Area input
-    area = st.number_input(
-        "Electrode area (cm²)",
-        value=st.session_state.sample_info.get('area_cm2', 0.636),
-        min_value=0.001,
-        step=0.01,
-        format="%.3f",
-        help="φ9mm = 0.636 cm²"
+    # Area input mode toggle
+    area_mode = st.radio(
+        "Electrode size input",
+        options=['area', 'diameter'],
+        format_func=lambda x: 'Area (cm²)' if x == 'area' else 'Diameter (cm)',
+        index=0 if st.session_state.sample_info.get('area_input_mode', 'area') == 'area' else 1,
+        horizontal=True
     )
-    st.session_state.sample_info['area_cm2'] = area
+    st.session_state.sample_info['area_input_mode'] = area_mode
+
+    if area_mode == 'area':
+        area = st.number_input(
+            "Electrode area (cm²)",
+            value=st.session_state.sample_info.get('area_cm2', 1.0),
+            min_value=0.001,
+            step=0.01,
+            format="%.3f",
+            help="Default: 1.0 cm²"
+        )
+        st.session_state.sample_info['area_cm2'] = area
+        # Calculate diameter from area
+        diameter = np.sqrt(4 * area / np.pi)
+        st.session_state.sample_info['diameter_cm'] = diameter
+    else:
+        diameter = st.number_input(
+            "Electrode diameter (cm)",
+            value=st.session_state.sample_info.get('diameter_cm', 1.0),
+            min_value=0.001,
+            step=0.01,
+            format="%.3f",
+            help="Default: 1.0 cm"
+        )
+        st.session_state.sample_info['diameter_cm'] = diameter
+        # Calculate area from diameter
+        area = np.pi * (diameter / 2) ** 2
+        st.session_state.sample_info['area_cm2'] = area
+        st.caption(f"Area: **{area:.4f} cm²**")
 
     # Calculate loading
     loading_mg_cm2 = active_mass_mg / area
     st.caption(f"Loading: **{loading_mg_cm2:.3f} mg/cm²**")
 
     # Theoretical capacity (optional, collapsed by default)
-    with st.expander("Advanced settings"):
+    with st.expander("Theoretical Capacity Calculator"):
+        # Manual input
         theo_cap = st.number_input(
             "Theoretical capacity (mAh/g)",
             value=st.session_state.sample_info.get('theoretical_capacity', 140.0),
@@ -320,6 +376,41 @@ def sidebar_sample_info():
             step=10.0
         )
         st.session_state.sample_info['theoretical_capacity'] = theo_cap
+
+        st.markdown("---")
+        st.caption("Or calculate from composition:")
+
+        composition = st.text_input(
+            "Composition formula",
+            value=st.session_state.sample_info.get('composition', ''),
+            placeholder="e.g., LiCoO2, LiFePO4",
+            help="Enter chemical formula of active material"
+        )
+        st.session_state.sample_info['composition'] = composition
+
+        electron_n = st.number_input(
+            "Reaction electrons (n)",
+            value=st.session_state.sample_info.get('electron_number', 1),
+            min_value=1,
+            max_value=10,
+            step=1,
+            help="Number of electrons transferred in redox reaction"
+        )
+        st.session_state.sample_info['electron_number'] = electron_n
+
+        if composition:
+            try:
+                from utils.theocapacity import calculate_theoretical_capacity
+                calc_cap, molar_mass = calculate_theoretical_capacity(composition, electron_n)
+                if calc_cap is not None:
+                    st.success(f"**{calc_cap:.2f} mAh/g** (M = {molar_mass:.2f} g/mol)")
+                    if st.button("Apply calculated value"):
+                        st.session_state.sample_info['theoretical_capacity'] = calc_cap
+                        st.rerun()
+            except ImportError:
+                st.warning("theocapacity module not available")
+            except Exception as e:
+                st.error(f"Calculation error: {e}")
 
 
 def sidebar_file_manager():
@@ -391,11 +482,12 @@ def sidebar_view_mode():
         'Summary': '📈 Cycle Summary',
         'Retention': '📉 Capacity Retention',
         'Cumulative': '📊 Cumulative Capacity',
+        'DataFrame': '📋 Data Table',
     }
 
     # Add EIS options if data is available
     if st.session_state.eis_data:
-        view_options['EIS'] = '🔬 EIS (Nyquist)'
+        view_options['Nyquist'] = '🔬 EIS (Nyquist)'
         view_options['Bode'] = '📈 EIS (Bode)'
 
     # Add Session view if MPS is loaded
@@ -624,14 +716,19 @@ def render_main_plot():
         render_session_info()
         return
 
-    # Handle EIS view
-    if view_mode == 'EIS' and st.session_state.eis_data:
-        render_eis_plot()
+    # Handle Nyquist view (EIS)
+    if view_mode == 'Nyquist' and st.session_state.eis_data:
+        render_nyquist_plot()
         return
 
     # Handle Bode plot view
     if view_mode == 'Bode' and st.session_state.eis_data:
         render_bode_plot()
+        return
+
+    # Handle DataFrame view
+    if view_mode == 'DataFrame':
+        render_dataframe_view()
         return
 
     # Standard CD views
@@ -727,7 +824,95 @@ def render_session_info():
             st.markdown(f"⬜ **{tech.index}. {tech.short_name}**: No data file")
 
 
-def render_eis_plot():
+def render_dataframe_view():
+    """Render raw data as DataFrame table"""
+    if st.session_state.selected_file is None:
+        st.info("Select a file from the sidebar to view data")
+        return
+
+    if st.session_state.selected_file not in st.session_state.files:
+        st.warning("Selected file not found")
+        return
+
+    data = st.session_state.files[st.session_state.selected_file]
+    st.markdown(f"### Data Table: {st.session_state.selected_file}")
+
+    # Check if we have raw dataframe
+    if 'df' in data and data['df'] is not None:
+        df = data['df']
+        st.dataframe(df, use_container_width=True, height=500)
+
+        # Data info
+        st.caption(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+
+        # Download CSV button
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            "Download CSV",
+            data=csv_data,
+            file_name=f"{st.session_state.selected_file}_data.csv",
+            mime="text/csv"
+        )
+    else:
+        # Build DataFrame from available data
+        df_dict = {}
+
+        # Add time if available
+        if 'time' in data and data['time'] is not None:
+            df_dict['time (s)'] = data['time']
+
+        # Add voltage if available
+        if 'voltage' in data and data['voltage'] is not None:
+            df_dict['voltage (V)'] = data['voltage']
+
+        # Add current if available
+        if 'current' in data and data['current'] is not None:
+            df_dict['current (mA)'] = data['current']
+
+        # Add capacity if available
+        if 'capacity' in data and data['capacity'] is not None:
+            df_dict['capacity (mAh)'] = data['capacity']
+
+        if df_dict:
+            df = pd.DataFrame(df_dict)
+            st.dataframe(df, use_container_width=True, height=500)
+            st.caption(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
+
+            # Download button
+            csv_data = df.to_csv(index=False)
+            st.download_button(
+                "Download CSV",
+                data=csv_data,
+                file_name=f"{st.session_state.selected_file}_data.csv",
+                mime="text/csv"
+            )
+        else:
+            st.warning("No raw data available for this file")
+
+    # Show cycle information if available
+    if 'cycles' in data and data['cycles']:
+        with st.expander("Cycle Data", expanded=False):
+            cycles = data['cycles']
+            cycle_info = []
+            for i, cycle in enumerate(cycles):
+                info = {
+                    'Cycle': cycle.get('cycle_number', i) + 1,
+                    'Charge (mAh)': cycle.get('capacity_charge_mAh', None),
+                    'Discharge (mAh)': cycle.get('capacity_discharge_mAh', None),
+                    'CE (%)': cycle.get('coulombic_efficiency', None),
+                }
+                # Filter None values
+                info = {k: v for k, v in info.items() if v is not None}
+                if 'CE (%)' in info and info['CE (%)'] is not None:
+                    info['CE (%)'] = info['CE (%)'] * 100
+                cycle_info.append(info)
+
+            if cycle_info:
+                cycle_df = pd.DataFrame(cycle_info)
+                st.dataframe(cycle_df, use_container_width=True)
+
+
+def render_nyquist_plot():
     """Render EIS Nyquist plot"""
     eis_list = st.session_state.eis_data
     settings = st.session_state.plot_settings
