@@ -915,13 +915,34 @@ def render_dataframe_view():
 
 def render_nyquist_plot():
     """Render EIS Nyquist plot"""
-    eis_list = st.session_state.eis_data
     settings = st.session_state.plot_settings
 
     st.markdown("### EIS Data (Nyquist Plot)")
 
+    # Check for EIS data from multiple sources
+    eis_list = []
+
+    # Source 1: st.session_state.eis_data (from MPS session)
+    if st.session_state.eis_data:
+        eis_list.extend(st.session_state.eis_data)
+
+    # Source 2: Currently selected file (if it contains EIS data)
+    if st.session_state.selected_file and st.session_state.selected_file in st.session_state.files:
+        data = st.session_state.files[st.session_state.selected_file]
+        # Check if this file has EIS data
+        if 'Z_real' in data and data['Z_real'] is not None and 'Z_imag' in data and data['Z_imag'] is not None:
+            # Add as EIS data
+            eis_entry = {
+                'Z_real': data['Z_real'],
+                'Z_imag': data['Z_imag'],
+                'technique_index': 1,
+            }
+            if 'freq' in data and data['freq'] is not None:
+                eis_entry['freq'] = data['freq']
+            eis_list.append(eis_entry)
+
     if not eis_list:
-        st.info("No EIS data available")
+        st.info("No EIS data available. Load an EIS file (.mpr with PEIS data) to view Nyquist plot.")
         return
 
     # Create Nyquist plot
@@ -1013,13 +1034,32 @@ def render_nyquist_plot():
 
 def render_bode_plot():
     """Render EIS Bode plot (|Z| and Phase vs Frequency)"""
-    eis_list = st.session_state.eis_data
     settings = st.session_state.plot_settings
 
     st.markdown("### EIS Data (Bode Plot)")
 
+    # Check for EIS data from multiple sources (same as Nyquist)
+    eis_list = []
+
+    # Source 1: st.session_state.eis_data (from MPS session)
+    if st.session_state.eis_data:
+        eis_list.extend(st.session_state.eis_data)
+
+    # Source 2: Currently selected file (if it contains EIS data)
+    if st.session_state.selected_file and st.session_state.selected_file in st.session_state.files:
+        data = st.session_state.files[st.session_state.selected_file]
+        if 'Z_real' in data and data['Z_real'] is not None and 'Z_imag' in data and data['Z_imag'] is not None:
+            eis_entry = {
+                'Z_real': data['Z_real'],
+                'Z_imag': data['Z_imag'],
+                'technique_index': 1,
+            }
+            if 'freq' in data and data['freq'] is not None:
+                eis_entry['freq'] = data['freq']
+            eis_list.append(eis_entry)
+
     if not eis_list:
-        st.info("No EIS data available")
+        st.info("No EIS data available. Load an EIS file (.mpr with PEIS data) to view Bode plot.")
         return
 
     # Bode plot options

@@ -428,6 +428,54 @@ def _parse_cycles(data: Dict) -> List[Dict]:
     """
     cycles = []
 
+    # Method 0: Prioritize Ns column for GCPL data (BioLogic sequence splitting)
+    # Ns=0 is typically relaxation/OCV, Ns=1 is actual charge/discharge
+    # This should be checked first as it's more reliable for GCPL than half_cycle
+    if 'ns' in data and data['ns'] is not None:
+        ns = data['ns']
+        # Check if Ns has only 0 and 1 values (typical GCPL pattern)
+        unique_ns = np.unique(ns[~np.isnan(ns)])
+
+        if len(unique_ns) <= 3 and set(unique_ns).issubset({0, 1, 2}):
+            # Split by Ns transitions - each Ns=1 segment is a discharge cycle
+            ns_diff = np.diff(ns, prepend=ns[0])
+            change_indices = np.where(ns_diff != 0)[0]
+
+            if len(change_indices) > 0:
+                boundaries = [0] + list(change_indices) + [len(ns)]
+
+                cycle_num = 0
+                for i in range(len(boundaries) - 1):
+                    start_idx = boundaries[i]
+                    end_idx = boundaries[i + 1]
+
+                    if end_idx - start_idx < 5:
+                        continue
+
+                    # Get Ns value for this segment
+                    segment_ns = ns[start_idx]
+
+                    # Only include Ns=1 segments as cycles (actual charge/discharge)
+                    # Ns=0 segments are typically relaxation/OCV
+                    if segment_ns == 1:
+                        cycle_data = _extract_cycle_data(data, start_idx, end_idx, cycle_num)
+                        if cycle_data:
+                            cycle_data['ns_value'] = int(segment_ns)
+                            # Determine charge/discharge from current
+                            if 'current' in cycle_data and len(cycle_data['current']) > 0:
+                                avg_current = np.mean(cycle_data['current'])
+                                avg_abs_current = np.mean(np.abs(cycle_data['current']))
+                                if avg_abs_current < 0.01:
+                                    # Very low current - skip relaxation
+                                    continue
+                                cycle_data['is_charge'] = avg_current > 0
+                                cycle_data['is_discharge'] = avg_current < 0
+                            cycles.append(cycle_data)
+                            cycle_num += 1
+
+                if cycles:
+                    return cycles
+
     # Method 1: Use half_cycle column (most accurate for GCPL data)
     if 'half_cycle' in data:
         half_cycles = data['half_cycle']
