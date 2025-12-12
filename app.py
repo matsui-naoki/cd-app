@@ -1584,52 +1584,67 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
     label_size = settings.get('axis_label_font_size', 22)
     line_width = settings.get('line_width', 1)
 
+    x_label = 'Capacity / mAh g⁻¹' if capacity_unit == 'mAh/g' else 'Capacity / mAh cm⁻²'
+
     for file_info in sorted_files:
         data = file_info['data']
         color = file_info['color']
         filename = file_info['filename']
-        cycle_num = file_info['cycle_num']
+        file_cycle_num = file_info['cycle_num']  # Cycle number assigned to this file
+        is_charge = file_info.get('is_charge', False)
+        is_discharge = file_info.get('is_discharge', False)
+
+        # Determine type label
+        type_label = 'C' if is_charge else ('D' if is_discharge else '')
 
         # Get capacity and voltage from cycles or raw data
         if 'cycles' in data and len(data['cycles']) > 0:
-            for cycle in data['cycles']:
+            for i, cycle in enumerate(data['cycles']):
                 if 'voltage' not in cycle or 'capacity' not in cycle:
                     continue
                 voltage = cycle['voltage']
-                capacity = cycle['capacity']
+                capacity = np.abs(cycle['capacity'])  # Use absolute value
 
                 # Convert capacity
                 if capacity_unit == 'mAh/g':
                     cap_display = capacity / mass_g
-                    x_label = 'Capacity / mAh g⁻¹'
                 else:
                     cap_display = capacity * mass_g * 1000 / area_cm2
-                    x_label = 'Capacity / mAh cm⁻²'
+
+                # Create trace name with file cycle number and internal cycle number
+                cycle_label = f"Cycle {file_cycle_num + 1}"
+                if len(data['cycles']) > 1:
+                    cycle_label += f"-{i + 1}"
+                if type_label:
+                    cycle_label += f" ({type_label})"
 
                 fig.add_trace(go.Scatter(
                     x=cap_display,
                     y=voltage,
                     mode='lines',
-                    name=f"Cycle {cycle_num + 1}",
+                    name=cycle_label,
                     line=dict(width=line_width, color=color),
                     hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
                 ))
         elif 'capacity' in data and data['capacity'] is not None and 'voltage' in data:
-            capacity = data['capacity']
+            capacity = np.abs(data['capacity'])  # Use absolute value
             voltage = data['voltage']
 
             if capacity_unit == 'mAh/g':
                 cap_display = capacity / mass_g
-                x_label = 'Capacity / mAh g⁻¹'
             else:
                 cap_display = capacity * mass_g * 1000 / area_cm2
-                x_label = 'Capacity / mAh cm⁻²'
+
+            # Create trace name
+            cycle_label = f"Cycle {file_cycle_num + 1}"
+            if type_label:
+                cycle_label += f" ({type_label})"
 
             fig.add_trace(go.Scatter(
                 x=cap_display,
                 y=voltage,
                 mode='lines',
-                name=f"Cycle {cycle_num + 1}",
+                name=cycle_label,
                 line=dict(width=line_width, color=color),
                 hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
             ))
@@ -1640,7 +1655,7 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
         paper_bgcolor='white',
         height=500,
         xaxis=dict(
-            title=x_label if 'x_label' in dir() else 'Capacity / mAh g⁻¹',
+            title=x_label,
             title_font=dict(size=label_size),
             tickfont=dict(size=tick_size),
             showgrid=False,
