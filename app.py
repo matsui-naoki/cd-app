@@ -1586,11 +1586,31 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
 
     x_label = 'Capacity / mAh g⁻¹' if capacity_unit == 'mAh/g' else 'Capacity / mAh cm⁻²'
 
+    # First pass: count total cycles across all files for color assignment
+    total_cycles = 0
     for file_info in sorted_files:
         data = file_info['data']
-        color = file_info['color']
+        if 'cycles' in data and len(data['cycles']) > 0:
+            total_cycles += len(data['cycles'])
+        else:
+            total_cycles += 1
+
+    # Color palette for cycles (first=red, middle=black, last=blue)
+    def get_cycle_color(cycle_idx: int, total: int) -> str:
+        if total <= 1:
+            return '#E63946'  # Red
+        elif cycle_idx == 0:
+            return '#E63946'  # Red for first
+        elif cycle_idx == total - 1:
+            return '#457B9D'  # Blue for last
+        else:
+            return '#000000'  # Black for middle
+
+    global_cycle_idx = 0
+
+    for file_info in sorted_files:
+        data = file_info['data']
         filename = file_info['filename']
-        file_cycle_num = file_info['cycle_num']  # Cycle number assigned to this file
         is_charge = file_info.get('is_charge', False)
         is_discharge = file_info.get('is_discharge', False)
 
@@ -1611,10 +1631,11 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
                 else:
                     cap_display = capacity * mass_g * 1000 / area_cm2
 
-                # Create trace name with file cycle number and internal cycle number
-                cycle_label = f"Cycle {file_cycle_num + 1}"
-                if len(data['cycles']) > 1:
-                    cycle_label += f"-{i + 1}"
+                # Get color based on global cycle index
+                cycle_color = get_cycle_color(global_cycle_idx, total_cycles)
+
+                # Create trace name: "Cycle N (C/D)" where N is sequential across all files
+                cycle_label = f"Cycle {global_cycle_idx + 1}"
                 if type_label:
                     cycle_label += f" ({type_label})"
 
@@ -1623,9 +1644,12 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
                     y=voltage,
                     mode='lines',
                     name=cycle_label,
-                    line=dict(width=line_width, color=color),
+                    line=dict(width=line_width, color=cycle_color),
                     hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
                 ))
+
+                global_cycle_idx += 1
+
         elif 'capacity' in data and data['capacity'] is not None and 'voltage' in data:
             capacity = np.abs(data['capacity'])  # Use absolute value
             voltage = data['voltage']
@@ -1635,8 +1659,11 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
             else:
                 cap_display = capacity * mass_g * 1000 / area_cm2
 
+            # Get color based on global cycle index
+            cycle_color = get_cycle_color(global_cycle_idx, total_cycles)
+
             # Create trace name
-            cycle_label = f"Cycle {file_cycle_num + 1}"
+            cycle_label = f"Cycle {global_cycle_idx + 1}"
             if type_label:
                 cycle_label += f" ({type_label})"
 
@@ -1645,9 +1672,11 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
                 y=voltage,
                 mode='lines',
                 name=cycle_label,
-                line=dict(width=line_width, color=color),
+                line=dict(width=line_width, color=cycle_color),
                 hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
             ))
+
+            global_cycle_idx += 1
 
     fig.update_layout(
         font={'family': 'Arial', 'color': 'black'},
