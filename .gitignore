@@ -30,10 +30,13 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 
-# Data files (user-uploaded)
+# Data files (user-uploaded and test data)
 *.mpt
+*.mpr
+*.mps
 *.dta
 data/
+test_data/
 
 # Temporary files
 *.tmp
