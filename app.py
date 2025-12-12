@@ -1586,14 +1586,44 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
 
     x_label = 'Capacity / mAh g⁻¹' if capacity_unit == 'mAh/g' else 'Capacity / mAh cm⁻²'
 
-    # First pass: count total cycles across all files for color assignment
-    total_cycles = 0
+    # Collect all cycles from all files with their start times for sorting
+    all_cycles_data = []
+
     for file_info in sorted_files:
         data = file_info['data']
+        filename = file_info['filename']
+        is_charge = file_info.get('is_charge', False)
+        is_discharge = file_info.get('is_discharge', False)
+        type_label = 'C' if is_charge else ('D' if is_discharge else '')
+
         if 'cycles' in data and len(data['cycles']) > 0:
-            total_cycles += len(data['cycles'])
-        else:
-            total_cycles += 1
+            for i, cycle in enumerate(data['cycles']):
+                if 'voltage' not in cycle or 'capacity' not in cycle:
+                    continue
+                # Get start time for sorting
+                start_time = cycle['time'][0] if 'time' in cycle and len(cycle['time']) > 0 else 0
+
+                all_cycles_data.append({
+                    'filename': filename,
+                    'voltage': cycle['voltage'],
+                    'capacity': np.abs(cycle['capacity']),
+                    'start_time': start_time,
+                    'type_label': type_label,
+                })
+        elif 'capacity' in data and data['capacity'] is not None and 'voltage' in data:
+            start_time = data['time'][0] if 'time' in data and len(data['time']) > 0 else 0
+            all_cycles_data.append({
+                'filename': filename,
+                'voltage': data['voltage'],
+                'capacity': np.abs(data['capacity']),
+                'start_time': start_time,
+                'type_label': type_label,
+            })
+
+    # Sort all cycles by start time
+    all_cycles_data.sort(key=lambda x: x['start_time'])
+
+    total_cycles = len(all_cycles_data)
 
     # Color palette for cycles (first=red, middle=black, last=blue)
     def get_cycle_color(cycle_idx: int, total: int) -> str:
@@ -1606,77 +1636,35 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
         else:
             return '#000000'  # Black for middle
 
-    global_cycle_idx = 0
+    # Add traces in time-sorted order
+    for global_cycle_idx, cyc_data in enumerate(all_cycles_data):
+        filename = cyc_data['filename']
+        voltage = cyc_data['voltage']
+        capacity = cyc_data['capacity']
+        type_label = cyc_data['type_label']
 
-    for file_info in sorted_files:
-        data = file_info['data']
-        filename = file_info['filename']
-        is_charge = file_info.get('is_charge', False)
-        is_discharge = file_info.get('is_discharge', False)
+        # Convert capacity
+        if capacity_unit == 'mAh/g':
+            cap_display = capacity / mass_g
+        else:
+            cap_display = capacity * mass_g * 1000 / area_cm2
 
-        # Determine type label
-        type_label = 'C' if is_charge else ('D' if is_discharge else '')
+        # Get color based on global cycle index
+        cycle_color = get_cycle_color(global_cycle_idx, total_cycles)
 
-        # Get capacity and voltage from cycles or raw data
-        if 'cycles' in data and len(data['cycles']) > 0:
-            for i, cycle in enumerate(data['cycles']):
-                if 'voltage' not in cycle or 'capacity' not in cycle:
-                    continue
-                voltage = cycle['voltage']
-                capacity = np.abs(cycle['capacity'])  # Use absolute value
+        # Create trace name: "Cycle N (C/D)" where N is sequential by time
+        cycle_label = f"Cycle {global_cycle_idx + 1}"
+        if type_label:
+            cycle_label += f" ({type_label})"
 
-                # Convert capacity
-                if capacity_unit == 'mAh/g':
-                    cap_display = capacity / mass_g
-                else:
-                    cap_display = capacity * mass_g * 1000 / area_cm2
-
-                # Get color based on global cycle index
-                cycle_color = get_cycle_color(global_cycle_idx, total_cycles)
-
-                # Create trace name: "Cycle N (C/D)" where N is sequential across all files
-                cycle_label = f"Cycle {global_cycle_idx + 1}"
-                if type_label:
-                    cycle_label += f" ({type_label})"
-
-                fig.add_trace(go.Scatter(
-                    x=cap_display,
-                    y=voltage,
-                    mode='lines',
-                    name=cycle_label,
-                    line=dict(width=line_width, color=cycle_color),
-                    hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
-                ))
-
-                global_cycle_idx += 1
-
-        elif 'capacity' in data and data['capacity'] is not None and 'voltage' in data:
-            capacity = np.abs(data['capacity'])  # Use absolute value
-            voltage = data['voltage']
-
-            if capacity_unit == 'mAh/g':
-                cap_display = capacity / mass_g
-            else:
-                cap_display = capacity * mass_g * 1000 / area_cm2
-
-            # Get color based on global cycle index
-            cycle_color = get_cycle_color(global_cycle_idx, total_cycles)
-
-            # Create trace name
-            cycle_label = f"Cycle {global_cycle_idx + 1}"
-            if type_label:
-                cycle_label += f" ({type_label})"
-
-            fig.add_trace(go.Scatter(
-                x=cap_display,
-                y=voltage,
-                mode='lines',
-                name=cycle_label,
-                line=dict(width=line_width, color=cycle_color),
-                hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
-            ))
-
-            global_cycle_idx += 1
+        fig.add_trace(go.Scatter(
+            x=cap_display,
+            y=voltage,
+            mode='lines',
+            name=cycle_label,
+            line=dict(width=line_width, color=cycle_color),
+            hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
+        ))
 
     fig.update_layout(
         font={'family': 'Arial', 'color': 'black'},
