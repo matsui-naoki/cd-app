@@ -27,9 +27,8 @@ from tools.mps_parser import (
 )
 from components.plots import (
     create_cd_plot, create_capacity_voltage_plot, create_dqdv_plot,
-    create_cycle_summary_plot, create_capacity_retention_plot,
-    create_multi_file_vq_plot, get_publication_config, COLORS,
-    create_bode_plot, create_cumulative_capacity_plot, apply_axis_range
+    create_cycle_summary_plot, create_multi_file_vq_plot,
+    get_publication_config, COLORS, apply_axis_range
 )
 from components.styles import inject_custom_css as inject_external_css
 from utils.helpers import (
@@ -84,7 +83,7 @@ def initialize_session_state():
             'legend_font_size': 12,
         }
     if 'view_mode' not in st.session_state:
-        st.session_state.view_mode = 'V-t'
+        st.session_state.view_mode = 'CD'
     if 'selected_cycles' not in st.session_state:
         st.session_state.selected_cycles = []
     if 'show_all_cycles' not in st.session_state:
@@ -438,22 +437,19 @@ def sidebar_view_mode():
     """View mode selection"""
     st.markdown("### View Mode")
 
+    # Ordered view options (no emojis)
     view_options = {
-        'V-t': '⏱️ Voltage vs Time',
-        'V-Q': '⚡ Voltage vs Capacity',
-        'dQ/dV': '📊 dQ/dV Analysis',
-        'CV/LSV': '📈 CV / LSV',
-        'Summary': '📈 Cycle Summary',
-        'Retention': '📉 Capacity Retention',
-        'Cumulative': '📊 Cumulative Capacity',
-        'Nyquist': '🔬 Nyquist Plot',
-        'Bode': '📈 Bode Plot',
-        'DataFrame': '📋 Data Table',
+        'CD': 'Charge-Discharge curve',
+        'CV/LSV': 'CV / LSV',
+        'Nyquist': 'Nyquist Plot',
+        'CCD': 'Critical Current Density',
+        'Custom': 'Custom Plot',
+        'DataFrame': 'Data Table',
     }
 
     # Add Session view if MPS is loaded
     if st.session_state.mps_session:
-        view_options['Session'] = '📋 Session Info'
+        view_options['Session'] = 'Session Info'
 
     selected = st.radio(
         "Select view",
@@ -471,7 +467,7 @@ def sidebar_view_mode():
 def sidebar_cycle_selection():
     """Cycle selection and color mode settings"""
     # Only show for views that use cycles
-    if st.session_state.view_mode not in ['V-t', 'V-Q', 'dQ/dV']:
+    if st.session_state.view_mode not in ['CD', 'CCD']:
         return
 
     if st.session_state.selected_file is None:
@@ -520,8 +516,8 @@ def sidebar_cycle_selection():
     else:
         st.session_state.selected_cycles = None  # None means all cycles
 
-    # Color mode selection (only for V-Q view)
-    if st.session_state.view_mode == 'V-Q':
+    # Color mode selection (only for CD view)
+    if st.session_state.view_mode == 'CD':
         st.markdown("##### Color mode")
         color_options = [
             'cycle',           # Rainbow by cycle number
@@ -682,11 +678,6 @@ def render_main_plot():
         render_nyquist_plot()
         return
 
-    # Handle Bode plot view
-    if view_mode == 'Bode':
-        render_bode_plot()
-        return
-
     # Handle DataFrame view
     if view_mode == 'DataFrame':
         render_dataframe_view()
@@ -697,7 +688,17 @@ def render_main_plot():
         render_cv_lsv_plot()
         return
 
-    # Standard CD views
+    # Handle CCD (Critical Current Density) view
+    if view_mode == 'CCD':
+        render_ccd_plot()
+        return
+
+    # Handle Custom view
+    if view_mode == 'Custom':
+        render_custom_plot()
+        return
+
+    # Standard CD view (Charge-Discharge curve with dQ/dV and Cycle Performance)
     if st.session_state.selected_file is None:
         st.info("Select a file from the sidebar to view data")
         return
@@ -718,15 +719,10 @@ def render_main_plot():
     # Get plot config for export
     plot_config = get_publication_config()
 
-    if view_mode == 'V-t':
-        fig = create_cd_plot(data, settings, sample_info, selected_cycles)
-        st.plotly_chart(fig, use_container_width=True, config=plot_config)
-
-    elif view_mode == 'V-Q':
-        # Multi-file support for V-Q view
+    if view_mode == 'CD':
+        # Main Charge-Discharge curve (V vs Q)
         selected_files = st.session_state.selected_files
         if len(selected_files) > 1:
-            # Multi-file comparison mode
             files_data = {fn: st.session_state.files[fn] for fn in selected_files if fn in st.session_state.files}
             fig = create_multi_file_vq_plot(files_data, settings, sample_info, selected_cycles, color_mode)
         else:
@@ -740,66 +736,24 @@ def render_main_plot():
             options=['mAh/g', 'mAh/cm²'],
             index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
             horizontal=True,
-            key='capacity_unit_vq'
+            key='capacity_unit_cd'
         )
         if capacity_unit != sample_info.get('capacity_unit'):
             st.session_state.sample_info['capacity_unit'] = capacity_unit
             st.rerun()
 
-    elif view_mode == 'dQ/dV':
-        fig = create_dqdv_plot(data, settings, sample_info, selected_cycles)
-        st.plotly_chart(fig, use_container_width=True, config=plot_config)
+        # Sub-panels: dQ/dV curve and Cycle Performance
+        col1, col2 = st.columns(2)
 
-    elif view_mode == 'Summary':
-        fig = create_cycle_summary_plot(data, settings, sample_info)
-        st.plotly_chart(fig, use_container_width=True, config=plot_config)
+        with col1:
+            with st.expander("dQ/dV curve", expanded=False):
+                fig_dqdv = create_dqdv_plot(data, settings, sample_info, selected_cycles)
+                st.plotly_chart(fig_dqdv, use_container_width=True, config=plot_config)
 
-        # Capacity unit selection below the plot
-        st.markdown("---")
-        capacity_unit = st.radio(
-            "Capacity unit",
-            options=['mAh/g', 'mAh/cm²'],
-            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
-            horizontal=True,
-            key='capacity_unit_summary'
-        )
-        if capacity_unit != sample_info.get('capacity_unit'):
-            st.session_state.sample_info['capacity_unit'] = capacity_unit
-            st.rerun()
-
-    elif view_mode == 'Retention':
-        fig = create_capacity_retention_plot(data, settings, sample_info)
-        st.plotly_chart(fig, use_container_width=True, config=plot_config)
-
-        # Capacity unit selection below the plot
-        st.markdown("---")
-        capacity_unit = st.radio(
-            "Capacity unit",
-            options=['mAh/g', 'mAh/cm²'],
-            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
-            horizontal=True,
-            key='capacity_unit_retention'
-        )
-        if capacity_unit != sample_info.get('capacity_unit'):
-            st.session_state.sample_info['capacity_unit'] = capacity_unit
-            st.rerun()
-
-    elif view_mode == 'Cumulative':
-        fig = create_cumulative_capacity_plot(data, settings, sample_info, capacity_type='both')
-        st.plotly_chart(fig, use_container_width=True, config=plot_config)
-
-        # Capacity unit selection below the plot
-        st.markdown("---")
-        capacity_unit = st.radio(
-            "Capacity unit",
-            options=['mAh/g', 'mAh/cm²'],
-            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
-            horizontal=True,
-            key='capacity_unit_cumulative'
-        )
-        if capacity_unit != sample_info.get('capacity_unit'):
-            st.session_state.sample_info['capacity_unit'] = capacity_unit
-            st.rerun()
+        with col2:
+            with st.expander("Cycle Performance", expanded=False):
+                fig_summary = create_cycle_summary_plot(data, settings, sample_info)
+                st.plotly_chart(fig_summary, use_container_width=True, config=plot_config)
 
     # Show data summary
     render_data_summary(data, sample_info)
@@ -1188,6 +1142,251 @@ def render_cv_lsv_plot():
         if use_density:
             st.text(f"Current density range: {current_display.min():.3f} - {current_display.max():.3f} mA/cm²")
         st.text(f"Data points: {len(voltage)}")
+
+
+def render_ccd_plot():
+    """Render Critical Current Density (CCD) plot
+    Left Y-axis (black): Overpotential / mV
+    X-axis: Time / h
+    Right Y-axis (blue): Applied current / mA
+    """
+    if st.session_state.selected_file is None:
+        st.info("Select a file from the sidebar to view data")
+        return
+
+    if st.session_state.selected_file not in st.session_state.files:
+        st.warning("Selected file not found")
+        return
+
+    data = st.session_state.files[st.session_state.selected_file]
+    settings = st.session_state.plot_settings
+
+    st.markdown(f"### Critical Current Density: {st.session_state.selected_file}")
+
+    # Check for required data
+    if 'voltage' not in data or data['voltage'] is None:
+        st.warning("No voltage data available for CCD plot")
+        return
+    if 'time' not in data or data['time'] is None:
+        st.warning("No time data available for CCD plot")
+        return
+
+    voltage = data['voltage']
+    time_s = data['time']
+    time_h = time_s / 3600  # Convert to hours
+
+    current = data.get('current', None)
+
+    # Calculate overpotential (deviation from OCV or reference)
+    # For CCD, overpotential is typically voltage - OCV
+    # Here we'll use the voltage directly as overpotential proxy, converting to mV
+    overpotential_mV = voltage * 1000  # V to mV (adjust as needed)
+
+    tick_size = settings.get('tick_font_size', 22)
+    label_size = settings.get('axis_label_font_size', 22)
+    line_width = settings.get('line_width', 1)
+
+    # Create figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Left Y-axis: Overpotential (black)
+    fig.add_trace(
+        go.Scatter(
+            x=time_h,
+            y=overpotential_mV,
+            mode='lines',
+            name='Overpotential',
+            line=dict(width=line_width, color='black'),
+            hovertemplate='t = %{x:.2f} h<br>η = %{y:.1f} mV<extra></extra>'
+        ),
+        secondary_y=False
+    )
+
+    # Right Y-axis: Applied current (blue)
+    if current is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=time_h,
+                y=current,
+                mode='lines',
+                name='Current',
+                line=dict(width=line_width, color='#1f77b4'),
+                hovertemplate='t = %{x:.2f} h<br>I = %{y:.3f} mA<extra></extra>'
+            ),
+            secondary_y=True
+        )
+
+    fig.update_layout(
+        font={'family': 'Arial', 'color': 'black'},
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=500,
+        showlegend=True,
+        legend=dict(
+            yanchor="top", y=0.99, xanchor="right", x=0.99,
+            font=dict(size=settings.get('legend_font_size', 12)),
+            bgcolor='rgba(255,255,255,0.8)'
+        ),
+    )
+
+    # Left Y-axis (Overpotential)
+    fig.update_yaxes(
+        title_text="Overpotential / mV",
+        title_font=dict(size=label_size, color='black'),
+        tickfont=dict(size=tick_size, color='black'),
+        showgrid=False,
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        mirror=False,
+        ticks='inside',
+        secondary_y=False
+    )
+
+    # Right Y-axis (Current)
+    fig.update_yaxes(
+        title_text="Applied current / mA",
+        title_font=dict(size=label_size, color='#1f77b4'),
+        tickfont=dict(size=tick_size, color='#1f77b4'),
+        showgrid=False,
+        showline=True,
+        linewidth=1,
+        linecolor='#1f77b4',
+        mirror=False,
+        ticks='inside',
+        secondary_y=True
+    )
+
+    # X-axis (Time)
+    fig.update_xaxes(
+        title_text="Time / h",
+        title_font=dict(size=label_size),
+        tickfont=dict(size=tick_size),
+        showgrid=False,
+        showline=True,
+        linewidth=1,
+        linecolor='black',
+        mirror=True,
+        ticks='inside',
+    )
+
+    plot_config = get_publication_config()
+    st.plotly_chart(fig, use_container_width=True, config=plot_config)
+
+    # Data summary
+    with st.expander("CCD Data Summary", expanded=False):
+        st.text(f"Time range: {time_h.min():.2f} - {time_h.max():.2f} h")
+        st.text(f"Voltage range: {voltage.min():.3f} - {voltage.max():.3f} V")
+        if current is not None:
+            st.text(f"Current range: {current.min():.3f} - {current.max():.3f} mA")
+        st.text(f"Data points: {len(voltage)}")
+
+
+def render_custom_plot():
+    """Render custom plot with user-selectable X and Y axes"""
+    if st.session_state.selected_file is None:
+        st.info("Select a file from the sidebar to view data")
+        return
+
+    if st.session_state.selected_file not in st.session_state.files:
+        st.warning("Selected file not found")
+        return
+
+    data = st.session_state.files[st.session_state.selected_file]
+    settings = st.session_state.plot_settings
+
+    st.markdown(f"### Custom Plot: {st.session_state.selected_file}")
+
+    # Get available columns
+    available_cols = []
+    col_data = {}
+
+    # Check for standard arrays
+    standard_keys = ['time', 'voltage', 'current', 'capacity', 'freq', 'Z_real', 'Z_imag']
+    for key in standard_keys:
+        if key in data and data[key] is not None and len(data[key]) > 0:
+            available_cols.append(key)
+            col_data[key] = data[key]
+
+    # Also check raw_df columns
+    if 'raw_df' in data and data['raw_df'] is not None:
+        df = data['raw_df']
+        for col in df.columns:
+            if col not in available_cols and df[col].dtype in ['float64', 'float32', 'int64', 'int32']:
+                available_cols.append(col)
+                col_data[col] = df[col].values
+
+    if len(available_cols) < 2:
+        st.warning("Not enough numeric columns for custom plot")
+        return
+
+    # Column selection
+    col1, col2 = st.columns(2)
+    with col1:
+        x_col = st.selectbox("X-axis", options=available_cols, index=0, key='custom_x')
+    with col2:
+        y_col = st.selectbox("Y-axis", options=available_cols, index=min(1, len(available_cols)-1), key='custom_y')
+
+    x_data = col_data[x_col]
+    y_data = col_data[y_col]
+
+    # Ensure same length
+    min_len = min(len(x_data), len(y_data))
+    x_data = x_data[:min_len]
+    y_data = y_data[:min_len]
+
+    tick_size = settings.get('tick_font_size', 22)
+    label_size = settings.get('axis_label_font_size', 22)
+    line_width = settings.get('line_width', 1)
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=x_data,
+        y=y_data,
+        mode='lines',
+        line=dict(width=line_width, color='#1f77b4'),
+        hovertemplate=f'{x_col} = %{{x:.3f}}<br>{y_col} = %{{y:.3f}}<extra></extra>'
+    ))
+
+    fig.update_layout(
+        font={'family': 'Arial', 'color': 'black'},
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=500,
+        xaxis=dict(
+            title=x_col,
+            title_font=dict(size=label_size),
+            tickfont=dict(size=tick_size),
+            showgrid=False,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True,
+            ticks='inside',
+        ),
+        yaxis=dict(
+            title=y_col,
+            title_font=dict(size=label_size),
+            tickfont=dict(size=tick_size),
+            showgrid=False,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True,
+            ticks='inside',
+        ),
+        showlegend=False,
+    )
+
+    plot_config = get_publication_config()
+    st.plotly_chart(fig, use_container_width=True, config=plot_config)
+
+    # Data summary
+    with st.expander("Custom Plot Data Summary", expanded=False):
+        st.text(f"{x_col} range: {x_data.min():.4g} - {x_data.max():.4g}")
+        st.text(f"{y_col} range: {y_data.min():.4g} - {y_data.max():.4g}")
+        st.text(f"Data points: {len(x_data)}")
 
 
 def render_data_summary(data, sample_info):
