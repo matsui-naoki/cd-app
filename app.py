@@ -40,7 +40,7 @@ from utils.igor_export import generate_igor_file, generate_csv_export
 # Page configuration
 st.set_page_config(
     page_title="CD Analyzer",
-    page_icon="🔋",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -132,7 +132,7 @@ def inject_custom_css():
 
 def sidebar_header():
     """Render sidebar header"""
-    st.markdown('<div class="sidebar-title">🔋 CD Analyzer</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-title">CD Analyzer</div>', unsafe_allow_html=True)
 
 
 def process_uploaded_files(uploaded_files):
@@ -972,9 +972,9 @@ def render_session_info():
     st.markdown("##### Data Files")
     for tech in session.techniques:
         if tech.has_data:
-            st.markdown(f"✅ **{tech.index}. {tech.short_name}**: `{os.path.basename(tech.data_file)}`")
+            st.markdown(f"[+] **{tech.index}. {tech.short_name}**: `{os.path.basename(tech.data_file)}`")
         else:
-            st.markdown(f"⬜ **{tech.index}. {tech.short_name}**: No data file")
+            st.markdown(f"[-] **{tech.index}. {tech.short_name}**: No data file")
 
 
 def render_dataframe_view():
