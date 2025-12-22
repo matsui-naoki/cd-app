@@ -2,10 +2,90 @@
 Helper functions for battery data analysis
 """
 
+import re
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
 from scipy import signal
 from scipy.ndimage import uniform_filter1d
+
+
+def format_formula_subscript(composition: str) -> str:
+    """
+    Convert numbers in chemical formula to subscript format for display.
+
+    For Plotly/HTML: Uses Unicode subscript characters (₀₁₂₃₄₅₆₇₈₉)
+
+    Parameters
+    ----------
+    composition : str
+        Chemical formula (e.g., 'LiCoO2', 'Li0.5FePO4')
+
+    Returns
+    -------
+    str
+        Formula with subscript numbers (e.g., 'LiCoO₂', 'Li₀.₅FePO₄')
+
+    Examples
+    --------
+    >>> format_formula_subscript('LiCoO2')
+    'LiCoO₂'
+    >>> format_formula_subscript('Li0.5FePO4')
+    'Li₀.₅FePO₄'
+    """
+    if not composition:
+        return composition
+
+    # Unicode subscript digits mapping
+    subscript_map = {
+        '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
+        '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+        '.': '.'  # Keep decimal point as-is for now
+    }
+
+    result = []
+    i = 0
+    while i < len(composition):
+        char = composition[i]
+
+        # Check if this is a number or decimal (subscript candidate)
+        if char.isdigit() or (char == '.' and i + 1 < len(composition) and composition[i + 1].isdigit()):
+            # Collect the entire number (including decimals)
+            num_str = ''
+            while i < len(composition) and (composition[i].isdigit() or composition[i] == '.'):
+                num_str += composition[i]
+                i += 1
+            # Convert to subscript
+            for c in num_str:
+                if c in subscript_map:
+                    result.append(subscript_map[c])
+                else:
+                    result.append(c)
+        else:
+            result.append(char)
+            i += 1
+
+    return ''.join(result)
+
+
+def format_formula_html(composition: str) -> str:
+    """
+    Convert numbers in chemical formula to HTML subscript format.
+
+    Parameters
+    ----------
+    composition : str
+        Chemical formula (e.g., 'LiCoO2', 'Li0.5FePO4')
+
+    Returns
+    -------
+    str
+        Formula with HTML subscript tags (e.g., 'LiCoO<sub>2</sub>')
+    """
+    if not composition:
+        return composition
+
+    # Use regex to wrap numbers in <sub> tags
+    return re.sub(r'(\d+\.?\d*)', r'<sub>\1</sub>', composition)
 
 
 def calculate_capacity(

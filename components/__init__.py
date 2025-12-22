@@ -24,7 +24,19 @@ from .plots import (
     RAINBOW_COLORS
 )
 
+from .sidebar import (
+    sidebar_header,
+    sidebar_file_upload,
+    sidebar_sample_info,
+    sidebar_file_manager,
+    sidebar_view_mode,
+    sidebar_cycle_selection,
+    sidebar_plot_settings,
+    render_data_list_panel
+)
+
 __all__ = [
+    # Plots
     'create_cd_plot',
     'create_capacity_voltage_plot',
     'create_dqdv_plot',
@@ -42,5 +54,14 @@ __all__ = [
     'common_layout',
     'common_axis_settings',
     'COLORS',
-    'RAINBOW_COLORS'
+    'RAINBOW_COLORS',
+    # Sidebar
+    'sidebar_header',
+    'sidebar_file_upload',
+    'sidebar_sample_info',
+    'sidebar_file_manager',
+    'sidebar_view_mode',
+    'sidebar_cycle_selection',
+    'sidebar_plot_settings',
+    'render_data_list_panel',
 ]

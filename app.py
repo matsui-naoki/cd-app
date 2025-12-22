@@ -13,6 +13,8 @@ import io
 import sys
 import os
 import re
+import matplotlib.pyplot as plt
+import matplotlib.colors as plt_colors
 
 # Add current directory to Python path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -81,6 +83,7 @@ def initialize_session_state():
             'dqdv_label': 'dQ/dV / mAh g⁻¹ V⁻¹',
             'show_legend': True,
             'legend_font_size': 12,
+            'show_electron_number': False,  # Show electron number on upper x-axis
         }
     if 'view_mode' not in st.session_state:
         st.session_state.view_mode = 'CD'
@@ -116,6 +119,9 @@ def initialize_session_state():
             'y_max': None,
             'enabled': False
         }
+    # Track which files the axis range was calculated from
+    if 'axis_range_files_hash' not in st.session_state:
+        st.session_state.axis_range_files_hash = None
     # Graph offset settings
     if 'graph_offset' not in st.session_state:
         st.session_state.graph_offset = {
@@ -763,47 +769,120 @@ def sort_files_by_time_and_assign_cycles(files_data: dict) -> list:
 
 
 def render_data_list_panel(sorted_files: list):
-    """Render data list panel below plot for per-file color settings"""
-    st.markdown("---")
-    st.markdown("##### Data Files")
+    """Render data list panel below plot for per-cycle color settings"""
+    # Initialize cycle_colors in session state if not present
+    if 'cycle_colors' not in st.session_state:
+        st.session_state.cycle_colors = {}
 
-    for i, file_info in enumerate(sorted_files):
+    # Count total cycles from all files (D+C pairs)
+    # First, collect all half-cycles with their start times
+    all_half_cycles = []
+    for file_info in sorted_files:
+        data = file_info['data']
         filename = file_info['filename']
-        cycle_num = file_info['cycle_num']
-        is_charge = file_info['is_charge']
-        is_discharge = file_info['is_discharge']
-        current_mA = file_info['current_mA']
+        is_charge = file_info.get('is_charge', False)
+        is_discharge = file_info.get('is_discharge', False)
 
-        # Type label
-        if is_charge:
-            type_label = "Charge"
-        elif is_discharge:
-            type_label = "Discharge"
+        if 'cycles' in data and len(data['cycles']) > 0:
+            for i, cycle in enumerate(data['cycles']):
+                start_time = cycle['time'][0] if 'time' in cycle and len(cycle['time']) > 0 else 0
+                all_half_cycles.append({
+                    'start_time': start_time,
+                    'type': 'C' if is_charge else ('D' if is_discharge else ''),
+                })
+        elif 'capacity' in data and data['capacity'] is not None:
+            start_time = data['time'][0] if 'time' in data and len(data['time']) > 0 else 0
+            all_half_cycles.append({
+                'start_time': start_time,
+                'type': 'C' if is_charge else ('D' if is_discharge else ''),
+            })
+
+    # Sort by time and assign cycle numbers (D+C = 1 cycle)
+    all_half_cycles.sort(key=lambda x: x['start_time'])
+    n_half_cycles = len(all_half_cycles)
+    n_cycles = (n_half_cycles + 1) // 2  # Round up for odd number of half-cycles
+
+    if n_cycles == 0:
+        return
+
+    # Define color schemes
+    COLOR_SCHEMES = {
+        'Default (Red-Black-Blue)': lambda i, n: '#E63946' if i == 1 else ('#009BFF' if i == n else '#000000'),
+        'Rainbow': lambda i, n: [
+            '#E63946', '#F77F00', '#FCBF49', '#90BE6D', '#43AA8B',
+            '#577590', '#6D6875', '#9B5DE5', '#F15BB5', '#00BBF9'
+        ][(i - 1) % 10],
+        'Viridis': lambda i, n: plt_colors.rgb2hex(plt.cm.viridis((i - 1) / max(1, n - 1))) if n > 1 else '#440154',
+        'Plasma': lambda i, n: plt_colors.rgb2hex(plt.cm.plasma((i - 1) / max(1, n - 1))) if n > 1 else '#0D0887',
+        'Inferno': lambda i, n: plt_colors.rgb2hex(plt.cm.inferno((i - 1) / max(1, n - 1))) if n > 1 else '#000004',
+        'Cool': lambda i, n: plt_colors.rgb2hex(plt.cm.cool((i - 1) / max(1, n - 1))) if n > 1 else '#00FFFF',
+        'Grayscale': lambda i, n: f'#{int(255 * (1 - (i - 1) / max(1, n - 1))):02x}{int(255 * (1 - (i - 1) / max(1, n - 1))):02x}{int(255 * (1 - (i - 1) / max(1, n - 1))):02x}' if n > 1 else '#000000',
+        'Custom': None,  # Use individual color pickers
+    }
+
+    # Initialize color_scheme in session state
+    if 'color_scheme' not in st.session_state:
+        st.session_state.color_scheme = 'Default (Red-Black-Blue)'
+
+    # Cycle Colors in collapsible expander
+    with st.expander(f"Cycle Colors ({n_cycles} cycles)", expanded=False):
+        # Color scheme selector
+        color_scheme = st.selectbox(
+            "Color scheme",
+            options=list(COLOR_SCHEMES.keys()),
+            index=list(COLOR_SCHEMES.keys()).index(st.session_state.color_scheme),
+            key='color_scheme_selector'
+        )
+
+        # Update colors when scheme changes
+        if color_scheme != st.session_state.color_scheme:
+            st.session_state.color_scheme = color_scheme
+            if color_scheme != 'Custom' and COLOR_SCHEMES[color_scheme]:
+                # Apply scheme to all cycles
+                for cycle_num in range(1, n_cycles + 1):
+                    st.session_state.cycle_colors[cycle_num] = COLOR_SCHEMES[color_scheme](cycle_num, n_cycles)
+            st.rerun()
+
+        # Show individual color pickers only for Custom mode
+        if color_scheme == 'Custom':
+            st.markdown("**Individual Cycle Colors**")
+            # Display in rows of 5 cycles
+            cycles_per_row = 5
+            for row_start in range(1, n_cycles + 1, cycles_per_row):
+                cols = st.columns(min(cycles_per_row, n_cycles - row_start + 1))
+                for i, col in enumerate(cols):
+                    cycle_num = row_start + i
+                    if cycle_num > n_cycles:
+                        break
+
+                    with col:
+                        # Get current color from session state or default
+                        default_scheme = COLOR_SCHEMES['Default (Red-Black-Blue)']
+                        default_color = default_scheme(cycle_num, n_cycles) if default_scheme else '#000000'
+                        current_color = st.session_state.cycle_colors.get(cycle_num, default_color)
+
+                        new_color = st.color_picker(
+                            f"Cycle {cycle_num}",
+                            value=current_color,
+                            key=f"cycle_color_{cycle_num}",
+                        )
+                        if new_color != current_color:
+                            st.session_state.cycle_colors[cycle_num] = new_color
+                            st.rerun()
         else:
-            type_label = "Unknown"
+            # Show preview of the color scheme in rows of 10
+            if n_cycles <= 30:
+                cycles_per_row = 10
+                for row_start in range(0, n_cycles, cycles_per_row):
+                    row_end = min(row_start + cycles_per_row, n_cycles)
+                    preview_cols = st.columns(row_end - row_start)
+                    for i, col in enumerate(preview_cols):
+                        cycle_num = row_start + i + 1
+                        color = st.session_state.cycle_colors.get(cycle_num, COLOR_SCHEMES[color_scheme](cycle_num, n_cycles) if COLOR_SCHEMES[color_scheme] else '#000000')
+                        col.markdown(f'<div style="background-color:{color};width:100%;height:20px;border-radius:3px;" title="Cycle {cycle_num}"></div>', unsafe_allow_html=True)
 
-        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-
-        with col1:
-            st.text(f"{filename}")
-
-        with col2:
-            st.text(f"Cycle {cycle_num + 1}")
-
-        with col3:
-            st.text(f"{type_label}")
-
-        with col4:
-            # Color picker
-            new_color = st.color_picker(
-                "Color",
-                value=file_info['color'],
-                key=f"color_{filename}_{i}",
-                label_visibility="collapsed"
-            )
-            if new_color != file_info['color']:
-                st.session_state.file_colors[filename] = new_color
-                st.rerun()
+        # Add caption below color palette to prevent expander cutoff
+        st.caption(f"Cycles 1-{n_cycles}")
 
 
 def render_main_plot():
@@ -866,75 +945,504 @@ def render_main_plot():
         selected_files = st.session_state.selected_files
         sorted_files = None
 
+        # Create hash of selected files to detect changes
+        current_files_hash = hash(tuple(sorted(selected_files))) if selected_files else None
+
+        # Reset axis range if selected files changed
+        if current_files_hash != st.session_state.axis_range_files_hash:
+            st.session_state.axis_range = {
+                'x_min': None,
+                'x_max': None,
+                'y_min': None,
+                'y_max': None,
+                'enabled': st.session_state.axis_range.get('enabled', False)
+            }
+            st.session_state.axis_range_files_hash = current_files_hash
+
         if len(selected_files) > 1:
             # Multi-file mode: sort by time and assign cycles
             files_data = {fn: st.session_state.files[fn] for fn in selected_files if fn in st.session_state.files}
             sorted_files = sort_files_by_time_and_assign_cycles(files_data)
 
+            # Calculate axis range from data with 5% margin (before plot creation)
+            if sorted_files and len(sorted_files) > 0:
+                all_x, all_y = [], []
+                for file_info in sorted_files:
+                    file_data = file_info['data']
+                    if 'cycles' in file_data:
+                        for cycle in file_data['cycles']:
+                            if 'capacity' in cycle and 'voltage' in cycle:
+                                cap = np.abs(np.array(cycle['capacity']))
+                                cap = cap - cap[0]  # Start from 0
+                                # Apply capacity normalization
+                                mass_mg = sample_info.get('mass_mg', 10.0)
+                                active_ratio = sample_info.get('active_ratio', 1.0)
+                                active_mass_g = mass_mg * active_ratio / 1000
+                                if active_mass_g > 0:
+                                    cap = cap / active_mass_g
+                                all_x.extend(cap.tolist())
+                                all_y.extend(cycle['voltage'].tolist() if hasattr(cycle['voltage'], 'tolist') else list(cycle['voltage']))
+                    elif 'capacity' in file_data and file_data['capacity'] is not None:
+                        cap = np.abs(np.array(file_data['capacity']))
+                        cap = cap - cap[0]
+                        mass_mg = sample_info.get('mass_mg', 10.0)
+                        active_ratio = sample_info.get('active_ratio', 1.0)
+                        active_mass_g = mass_mg * active_ratio / 1000
+                        if active_mass_g > 0:
+                            cap = cap / active_mass_g
+                        all_x.extend(cap.tolist())
+                        all_y.extend(file_data['voltage'].tolist() if hasattr(file_data['voltage'], 'tolist') else list(file_data['voltage']))
+
+                if all_x and all_y:
+                    x_range = max(all_x) - min(all_x)
+                    y_range = max(all_y) - min(all_y)
+                    margin = 0.05  # 5% margin
+                    data_x_min = min(all_x) - x_range * margin
+                    data_x_max = max(all_x) + x_range * margin
+                    data_y_min = min(all_y) - y_range * margin
+                    data_y_max = max(all_y) + y_range * margin
+                    # Round for cleaner values
+                    data_x_min = round(data_x_min, 1)
+                    data_x_max = round(data_x_max, 1)
+                    data_y_min = round(data_y_min, 2)
+                    data_y_max = round(data_y_max, 2)
+
+                    # Set default axis range values from data
+                    if st.session_state.axis_range.get('x_min') is None:
+                        st.session_state.axis_range['x_min'] = data_x_min
+                    if st.session_state.axis_range.get('x_max') is None:
+                        st.session_state.axis_range['x_max'] = data_x_max
+                    if st.session_state.axis_range.get('y_min') is None:
+                        st.session_state.axis_range['y_min'] = data_y_min
+                    if st.session_state.axis_range.get('y_max') is None:
+                        st.session_state.axis_range['y_max'] = data_y_max
+
             # Create multi-file plot with sorted files and custom colors
-            fig = create_multi_file_cd_plot(sorted_files, settings, sample_info)
+            axis_range = st.session_state.axis_range
+            show_electron_number = settings.get('show_electron_number', False)
+            fig = create_multi_file_cd_plot(sorted_files, settings, sample_info, axis_range, show_electron_number)
         else:
-            fig = create_capacity_voltage_plot(data, settings, sample_info, selected_cycles, color_mode)
+            # Get show_electron_number setting
+            show_electron_number = settings.get('show_electron_number', False)
+            fig = create_capacity_voltage_plot(
+                data, settings, sample_info, selected_cycles, color_mode,
+                show_electron_number=show_electron_number
+            )
+            # Apply axis range for single-file mode
+            axis_range = st.session_state.axis_range
+            if axis_range:
+                fig = apply_axis_range(fig, axis_range)
 
-        st.plotly_chart(fig, use_container_width=True, config=plot_config)
+        # Use width_mode setting: Responsive (default) = use_container_width, Fixed = specified width
+        use_responsive = st.session_state.plot_settings.get('width_mode', 'Responsive') == 'Responsive'
+        st.plotly_chart(fig, use_container_width=use_responsive, config=plot_config)
 
-        # Capacity unit selection below the plot
-        st.markdown("---")
-        capacity_unit = st.radio(
-            "Capacity unit",
-            options=['mAh/g', 'mAh/cm²'],
-            index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
-            horizontal=True,
-            key='capacity_unit_cd'
-        )
-        if capacity_unit != sample_info.get('capacity_unit'):
-            st.session_state.sample_info['capacity_unit'] = capacity_unit
-            st.rerun()
+        # Plot Settings below the chart (moved from sidebar)
+        with st.expander("Plot Settings", expanded=False):
+            # Row 1: Line and font sizes
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                new_line_width = st.slider(
+                    "Line width", 1, 5,
+                    st.session_state.plot_settings.get('line_width', 2),
+                    key='cd_line_width'
+                )
+                if new_line_width != st.session_state.plot_settings.get('line_width'):
+                    st.session_state.plot_settings['line_width'] = new_line_width
+                    st.rerun()
+            with col2:
+                new_tick_size = st.slider(
+                    "Tick font size", 8, 24,
+                    st.session_state.plot_settings.get('tick_font_size', 14),
+                    key='cd_tick_font_size'
+                )
+                if new_tick_size != st.session_state.plot_settings.get('tick_font_size'):
+                    st.session_state.plot_settings['tick_font_size'] = new_tick_size
+                    st.rerun()
+            with col3:
+                new_label_size = st.slider(
+                    "Axis label size", 10, 28,
+                    st.session_state.plot_settings.get('axis_label_font_size', 16),
+                    key='cd_axis_label_font_size'
+                )
+                if new_label_size != st.session_state.plot_settings.get('axis_label_font_size'):
+                    st.session_state.plot_settings['axis_label_font_size'] = new_label_size
+                    st.rerun()
 
-        # Data list panel for multi-file mode
+            # Row 2: Axis and tick settings
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                new_axis_width = st.slider(
+                    "Axis width", 1, 4,
+                    st.session_state.plot_settings.get('axis_width', 1),
+                    key='cd_axis_width'
+                )
+                if new_axis_width != st.session_state.plot_settings.get('axis_width'):
+                    st.session_state.plot_settings['axis_width'] = new_axis_width
+                    st.rerun()
+            with col5:
+                new_tick_length = st.slider(
+                    "Tick length", 2, 12,
+                    st.session_state.plot_settings.get('tick_length', 5),
+                    key='cd_tick_length'
+                )
+                if new_tick_length != st.session_state.plot_settings.get('tick_length'):
+                    st.session_state.plot_settings['tick_length'] = new_tick_length
+                    st.rerun()
+            with col6:
+                new_tick_width = st.slider(
+                    "Tick width", 1, 4,
+                    st.session_state.plot_settings.get('tick_width', 1),
+                    key='cd_tick_width'
+                )
+                if new_tick_width != st.session_state.plot_settings.get('tick_width'):
+                    st.session_state.plot_settings['tick_width'] = new_tick_width
+                    st.rerun()
+
+            # Row 3: Legend settings
+            col_leg1, col_leg2, col_leg3 = st.columns(3)
+            with col_leg1:
+                new_show_legend = st.checkbox(
+                    "Show legend",
+                    value=st.session_state.plot_settings.get('show_legend', True),
+                    key='cd_show_legend'
+                )
+                if new_show_legend != st.session_state.plot_settings.get('show_legend'):
+                    st.session_state.plot_settings['show_legend'] = new_show_legend
+                    st.rerun()
+            with col_leg2:
+                new_legend_by_color = st.checkbox(
+                    "Legend by color",
+                    value=st.session_state.plot_settings.get('legend_by_color', False),
+                    key='cd_legend_by_color',
+                    help="Group cycles by color in legend"
+                )
+                if new_legend_by_color != st.session_state.plot_settings.get('legend_by_color'):
+                    st.session_state.plot_settings['legend_by_color'] = new_legend_by_color
+                    st.rerun()
+            with col_leg3:
+                new_legend_font_size = st.slider(
+                    "Legend font size",
+                    min_value=8, max_value=24,
+                    value=st.session_state.plot_settings.get('legend_font_size', 12),
+                    key='cd_legend_font_size'
+                )
+                if new_legend_font_size != st.session_state.plot_settings.get('legend_font_size'):
+                    st.session_state.plot_settings['legend_font_size'] = new_legend_font_size
+                    st.rerun()
+
+            # Row 4: Figure size
+            col_wm, col_fw, col_fh = st.columns(3)
+            with col_wm:
+                width_mode = st.selectbox(
+                    "Width mode",
+                    options=['Responsive', 'Fixed'],
+                    index=0 if st.session_state.plot_settings.get('width_mode', 'Responsive') == 'Responsive' else 1,
+                    key='cd_width_mode',
+                    help="Responsive: follows window size, Fixed: uses specified width"
+                )
+                if width_mode != st.session_state.plot_settings.get('width_mode'):
+                    st.session_state.plot_settings['width_mode'] = width_mode
+                    st.rerun()
+            with col_fw:
+                new_fig_width = st.number_input(
+                    "Fig width (px)",
+                    min_value=300, max_value=1200,
+                    value=st.session_state.plot_settings.get('fig_width', 700),
+                    step=50,
+                    key='cd_fig_width',
+                    disabled=(st.session_state.plot_settings.get('width_mode', 'Responsive') == 'Responsive')
+                )
+                if new_fig_width != st.session_state.plot_settings.get('fig_width'):
+                    st.session_state.plot_settings['fig_width'] = new_fig_width
+                    st.rerun()
+            with col_fh:
+                new_fig_height = st.number_input(
+                    "Fig height (px)",
+                    min_value=300, max_value=1000,
+                    value=st.session_state.plot_settings.get('fig_height', 500),
+                    step=50,
+                    key='cd_fig_height'
+                )
+                if new_fig_height != st.session_state.plot_settings.get('fig_height'):
+                    st.session_state.plot_settings['fig_height'] = new_fig_height
+                    st.rerun()
+
+            # Axis Range section - calculate defaults from data with 5% margin
+            st.markdown("**Axis Range**")
+
+            # Calculate data range for defaults
+            data_x_min, data_x_max = 0.0, 200.0
+            data_y_min, data_y_max = 0.0, 5.0
+            all_x, all_y = [], []
+
+            if sorted_files and len(sorted_files) > 0:
+                # Multi-file mode
+                for file_info in sorted_files:
+                    file_data = file_info['data']
+                    if 'cycles' in file_data:
+                        for cycle in file_data['cycles']:
+                            if 'capacity' in cycle and 'voltage' in cycle:
+                                cap = np.abs(np.array(cycle['capacity']))
+                                cap = cap - cap[0]  # Start from 0
+                                # Apply capacity normalization
+                                mass_mg = sample_info.get('mass_mg', 10.0)
+                                active_ratio = sample_info.get('active_ratio', 1.0)
+                                active_mass_g = mass_mg * active_ratio / 1000
+                                if active_mass_g > 0:
+                                    cap = cap / active_mass_g
+                                all_x.extend(cap.tolist())
+                                all_y.extend(cycle['voltage'].tolist() if hasattr(cycle['voltage'], 'tolist') else list(cycle['voltage']))
+                    elif 'capacity' in file_data and file_data['capacity'] is not None:
+                        cap = np.abs(np.array(file_data['capacity']))
+                        cap = cap - cap[0]
+                        mass_mg = sample_info.get('mass_mg', 10.0)
+                        active_ratio = sample_info.get('active_ratio', 1.0)
+                        active_mass_g = mass_mg * active_ratio / 1000
+                        if active_mass_g > 0:
+                            cap = cap / active_mass_g
+                        all_x.extend(cap.tolist())
+                        all_y.extend(file_data['voltage'].tolist() if hasattr(file_data['voltage'], 'tolist') else list(file_data['voltage']))
+            else:
+                # Single-file mode
+                if 'cycles' in data:
+                    for cycle in data['cycles']:
+                        if 'capacity' in cycle and 'voltage' in cycle:
+                            cap = np.abs(np.array(cycle['capacity']))
+                            cap = cap - cap[0]
+                            mass_mg = sample_info.get('mass_mg', 10.0)
+                            active_ratio = sample_info.get('active_ratio', 1.0)
+                            active_mass_g = mass_mg * active_ratio / 1000
+                            if active_mass_g > 0:
+                                cap = cap / active_mass_g
+                            all_x.extend(cap.tolist())
+                            all_y.extend(cycle['voltage'].tolist() if hasattr(cycle['voltage'], 'tolist') else list(cycle['voltage']))
+                elif 'capacity' in data and data['capacity'] is not None:
+                    cap = np.abs(np.array(data['capacity']))
+                    cap = cap - cap[0]
+                    mass_mg = sample_info.get('mass_mg', 10.0)
+                    active_ratio = sample_info.get('active_ratio', 1.0)
+                    active_mass_g = mass_mg * active_ratio / 1000
+                    if active_mass_g > 0:
+                        cap = cap / active_mass_g
+                    all_x.extend(cap.tolist())
+                    all_y.extend(data['voltage'].tolist() if hasattr(data['voltage'], 'tolist') else list(data['voltage']))
+
+            if all_x and all_y:
+                x_range = max(all_x) - min(all_x)
+                y_range = max(all_y) - min(all_y)
+                margin = 0.05  # 5% margin
+                data_x_min = min(all_x) - x_range * margin
+                data_x_max = max(all_x) + x_range * margin
+                data_y_min = min(all_y) - y_range * margin
+                data_y_max = max(all_y) + y_range * margin
+                # Round for cleaner values
+                data_x_min = round(data_x_min, 1)
+                data_x_max = round(data_x_max, 1)
+                data_y_min = round(data_y_min, 2)
+                data_y_max = round(data_y_max, 2)
+
+            # Use calculated defaults if not already set
+            if st.session_state.axis_range.get('x_min') is None:
+                st.session_state.axis_range['x_min'] = data_x_min
+            if st.session_state.axis_range.get('x_max') is None:
+                st.session_state.axis_range['x_max'] = data_x_max
+            if st.session_state.axis_range.get('y_min') is None:
+                st.session_state.axis_range['y_min'] = data_y_min
+            if st.session_state.axis_range.get('y_max') is None:
+                st.session_state.axis_range['y_max'] = data_y_max
+
+            col_y1, col_y2, col_x1, col_x2, col_reset = st.columns([1, 1, 1, 1, 0.6])
+            with col_y1:
+                y_min = st.number_input(
+                    "V min", value=float(st.session_state.axis_range.get('y_min', data_y_min)),
+                    step=0.1, format="%.2f", key="cd_y_min"
+                )
+                st.session_state.axis_range['y_min'] = y_min
+            with col_y2:
+                y_max = st.number_input(
+                    "V max", value=float(st.session_state.axis_range.get('y_max', data_y_max)),
+                    step=0.1, format="%.2f", key="cd_y_max"
+                )
+                st.session_state.axis_range['y_max'] = y_max
+            with col_x1:
+                x_min = st.number_input(
+                    "Q min", value=float(st.session_state.axis_range.get('x_min', data_x_min)),
+                    step=10.0, format="%.1f", key="cd_x_min"
+                )
+                st.session_state.axis_range['x_min'] = x_min
+            with col_x2:
+                x_max = st.number_input(
+                    "Q max", value=float(st.session_state.axis_range.get('x_max', data_x_max)),
+                    step=10.0, format="%.1f", key="cd_x_max"
+                )
+                st.session_state.axis_range['x_max'] = x_max
+            with col_reset:
+                st.write("")  # Add vertical spacing to align button
+                if st.button("Reset", key="reset_axis_range", help="Reset axis range to auto-calculated values from data"):
+                    st.session_state.axis_range['x_min'] = data_x_min
+                    st.session_state.axis_range['x_max'] = data_x_max
+                    st.session_state.axis_range['y_min'] = data_y_min
+                    st.session_state.axis_range['y_max'] = data_y_max
+                    st.rerun()
+
+            # Capacity unit selection inside Plot Settings
+            st.markdown("**Capacity Unit**")
+            capacity_unit = st.radio(
+                "Unit",
+                options=['mAh/g', 'mAh/cm²'],
+                index=0 if sample_info.get('capacity_unit', 'mAh/g') == 'mAh/g' else 1,
+                horizontal=True,
+                key='capacity_unit_cd',
+                label_visibility='collapsed'
+            )
+            if capacity_unit != sample_info.get('capacity_unit'):
+                st.session_state.sample_info['capacity_unit'] = capacity_unit
+                st.rerun()
+
+            # Show electron number on upper x-axis (only available when:
+            # - theoretical capacity is calculated
+            # - composition is set
+            # - capacity unit is mAh/g)
+            theo_cap = sample_info.get('theoretical_capacity', 0)
+            composition = sample_info.get('composition', '')
+            cap_unit = sample_info.get('capacity_unit', 'mAh/g')
+
+            # Check if conditions are met to show the toggle
+            can_show_electron_toggle = (theo_cap > 0 and composition and cap_unit == 'mAh/g')
+
+            if can_show_electron_toggle:
+                st.markdown("**Upper X-axis**")
+                show_electron = st.checkbox(
+                    "Show electron number",
+                    value=st.session_state.plot_settings.get('show_electron_number', False),
+                    key='cd_show_electron_number',
+                    help=f"Display electron (*n*) in {composition} on upper x-axis"
+                )
+                if show_electron != st.session_state.plot_settings.get('show_electron_number'):
+                    st.session_state.plot_settings['show_electron_number'] = show_electron
+                    st.rerun()
+
+        # Data list panel for multi-file mode (Cycle Colors)
         if sorted_files and len(sorted_files) > 1:
             render_data_list_panel(sorted_files)
 
-        # Sub-panels: dQ/dV curve and Cycle Performance
-        col1, col2 = st.columns(2)
+        # Sub-panels: dQ/dV curve and Cycle Performance (stacked vertically)
+        with st.expander("dQ/dV curve", expanded=False):
+            if sorted_files and len(sorted_files) > 1:
+                fig_dqdv = create_multi_file_dqdv_plot(sorted_files, settings, sample_info)
+            else:
+                fig_dqdv = create_dqdv_plot(data, settings, sample_info, selected_cycles)
+            st.plotly_chart(fig_dqdv, use_container_width=True, config=plot_config)
 
-        with col1:
-            with st.expander("dQ/dV curve", expanded=False):
-                if sorted_files and len(sorted_files) > 1:
-                    fig_dqdv = create_multi_file_dqdv_plot(sorted_files, settings, sample_info)
-                else:
-                    fig_dqdv = create_dqdv_plot(data, settings, sample_info, selected_cycles)
-                st.plotly_chart(fig_dqdv, use_container_width=True, config=plot_config)
+            # Figure settings for dQ/dV (same style as main Plot Settings)
+            st.markdown("**Figure Settings**")
+            # Row 1: Line and font sizes
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.slider("Line width", 1, 5, settings.get('line_width', 1), key='dqdv_line_width')
+            with col2:
+                st.slider("Tick font size", 8, 24, settings.get('tick_font_size', 22), key='dqdv_tick_size')
+            with col3:
+                st.slider("Axis label size", 10, 28, settings.get('axis_label_font_size', 22), key='dqdv_label_size')
 
-        with col2:
-            with st.expander("Cycle Performance", expanded=False):
-                # Capacity display selector
-                cap_display = st.radio(
-                    "Display",
-                    options=['Discharge', 'Charge'],
-                    index=0 if st.session_state.capacity_display == 'discharge' else 1,
-                    horizontal=True,
-                    key='capacity_display_selector'
+            # Row 2: Axis and tick settings
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                st.slider("Axis width", 1, 4, settings.get('axis_width', 1), key='dqdv_axis_width')
+            with col5:
+                st.slider("Tick length", 2, 12, settings.get('tick_length', 5), key='dqdv_tick_length')
+            with col6:
+                st.slider("Tick width", 1, 4, settings.get('tick_width', 1), key='dqdv_tick_width')
+
+            # Row 3: Legend settings
+            col_leg1, col_leg2 = st.columns(2)
+            with col_leg1:
+                st.checkbox("Show legend", value=settings.get('show_legend', True), key='dqdv_show_legend')
+            with col_leg2:
+                st.slider("Legend font size", 8, 24, settings.get('legend_font_size', 12), key='dqdv_legend_font_size')
+
+            # Row 4: Figure size
+            col_wm, col_fw, col_fh = st.columns(3)
+            with col_wm:
+                st.selectbox("Width mode", options=['Responsive', 'Fixed'],
+                             index=0 if settings.get('width_mode', 'Responsive') == 'Responsive' else 1,
+                             key='dqdv_width_mode')
+            with col_fw:
+                st.number_input("Fig width (px)", min_value=300, max_value=1200,
+                                value=settings.get('fig_width', 700), step=50, key='dqdv_fig_width')
+            with col_fh:
+                st.number_input("Fig height (px)", min_value=300, max_value=1000,
+                                value=settings.get('fig_height', 500), step=50, key='dqdv_fig_height')
+
+        with st.expander("Cycle Performance", expanded=False):
+            # Capacity display selector
+            cap_display = st.radio(
+                "Display",
+                options=['Discharge', 'Charge'],
+                index=0 if st.session_state.capacity_display == 'discharge' else 1,
+                horizontal=True,
+                key='capacity_display_selector'
+            )
+            st.session_state.capacity_display = cap_display.lower()
+
+            # Rate label toggle
+            show_rate = st.checkbox(
+                "Show rate labels",
+                value=st.session_state.show_rate_labels,
+                key='show_rate_toggle'
+            )
+            st.session_state.show_rate_labels = show_rate
+
+            if sorted_files and len(sorted_files) > 1:
+                fig_perf = create_multi_file_cycle_performance(
+                    sorted_files, settings, sample_info,
+                    st.session_state.capacity_display,
+                    st.session_state.show_rate_labels
                 )
-                st.session_state.capacity_display = cap_display.lower()
+            else:
+                fig_perf = create_cycle_summary_plot(data, settings, sample_info)
+            st.plotly_chart(fig_perf, use_container_width=True, config=plot_config)
 
-                # Rate label toggle
-                show_rate = st.checkbox(
-                    "Show rate labels",
-                    value=st.session_state.show_rate_labels,
-                    key='show_rate_toggle'
-                )
-                st.session_state.show_rate_labels = show_rate
+            # Figure settings for Cycle Performance (same style as main Plot Settings)
+            st.markdown("**Figure Settings**")
+            # Row 1: Line and font sizes
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.slider("Line width", 1, 5, settings.get('line_width', 1), key='cp_line_width')
+            with col2:
+                st.slider("Tick font size", 8, 24, settings.get('tick_font_size', 22), key='cp_tick_size')
+            with col3:
+                st.slider("Axis label size", 10, 28, settings.get('axis_label_font_size', 22), key='cp_label_size')
 
-                if sorted_files and len(sorted_files) > 1:
-                    fig_perf = create_multi_file_cycle_performance(
-                        sorted_files, settings, sample_info,
-                        st.session_state.capacity_display,
-                        st.session_state.show_rate_labels
-                    )
-                else:
-                    fig_perf = create_cycle_summary_plot(data, settings, sample_info)
-                st.plotly_chart(fig_perf, use_container_width=True, config=plot_config)
+            # Row 2: Axis and tick settings
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                st.slider("Axis width", 1, 4, settings.get('axis_width', 1), key='cp_axis_width')
+            with col5:
+                st.slider("Tick length", 2, 12, settings.get('tick_length', 5), key='cp_tick_length')
+            with col6:
+                st.slider("Tick width", 1, 4, settings.get('tick_width', 1), key='cp_tick_width')
+
+            # Row 3: Legend settings
+            col_leg1, col_leg2 = st.columns(2)
+            with col_leg1:
+                st.checkbox("Show legend", value=settings.get('show_legend', True), key='cp_show_legend')
+            with col_leg2:
+                st.slider("Legend font size", 8, 24, settings.get('legend_font_size', 12), key='cp_legend_font_size')
+
+            # Row 4: Figure size
+            col_wm, col_fw, col_fh = st.columns(3)
+            with col_wm:
+                st.selectbox("Width mode", options=['Responsive', 'Fixed'],
+                             index=0 if settings.get('width_mode', 'Responsive') == 'Responsive' else 1,
+                             key='cp_width_mode')
+            with col_fw:
+                st.number_input("Fig width (px)", min_value=300, max_value=1200,
+                                value=settings.get('fig_width', 700), step=50, key='cp_fig_width')
+            with col_fh:
+                st.number_input("Fig height (px)", min_value=300, max_value=1000,
+                                value=settings.get('fig_height', 500), step=50, key='cp_fig_height')
 
     # Show data summary
     render_data_summary(data, sample_info)
@@ -1570,19 +2078,33 @@ def render_custom_plot():
         st.text(f"Data points: {len(x_data)}")
 
 
-def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: dict) -> go.Figure:
-    """Create Charge-Discharge plot for multiple files with custom colors"""
+def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: dict, axis_range: dict = None, show_electron_number: bool = False) -> go.Figure:
+    """Create Charge-Discharge plot for multiple files with custom colors
+
+    Parameters
+    ----------
+    show_electron_number : bool
+        If True and theoretical capacity is available with mAh/g unit,
+        show electron number on upper x-axis
+    """
     fig = go.Figure()
 
-    mass_g = sample_info.get('mass_mg', 1.0) / 1000
-    if mass_g <= 0:
-        mass_g = 0.001
+    # Calculate active mass considering active_ratio (same as single-file version)
+    mass_mg = sample_info.get('mass_mg', 10.0)
+    active_ratio = sample_info.get('active_ratio', 1.0)
+    active_mass_g = mass_mg * active_ratio / 1000  # g
+    if active_mass_g <= 0:
+        active_mass_g = 0.001
     area_cm2 = sample_info.get('area_cm2', 1.0)
     capacity_unit = sample_info.get('capacity_unit', 'mAh/g')
 
     tick_size = settings.get('tick_font_size', 22)
     label_size = settings.get('axis_label_font_size', 22)
     line_width = settings.get('line_width', 1)
+    axis_width = settings.get('axis_width', 1)
+    tick_length = settings.get('tick_length', 5)
+    tick_width = settings.get('tick_width', 1)
+    show_legend = settings.get('show_legend', True)
 
     x_label = 'Capacity / mAh g⁻¹' if capacity_unit == 'mAh/g' else 'Capacity / mAh cm⁻²'
 
@@ -1603,19 +2125,28 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
                 # Get start time for sorting
                 start_time = cycle['time'][0] if 'time' in cycle and len(cycle['time']) > 0 else 0
 
+                # Normalize capacity: absolute value, then start from 0
+                cap_raw = np.array(cycle['capacity'])
+                cap_abs = np.abs(cap_raw)
+                cap_normalized = cap_abs - cap_abs[0]  # Start from 0
+
                 all_cycles_data.append({
                     'filename': filename,
                     'voltage': cycle['voltage'],
-                    'capacity': np.abs(cycle['capacity']),
+                    'capacity': cap_normalized,
                     'start_time': start_time,
                     'type_label': type_label,
                 })
         elif 'capacity' in data and data['capacity'] is not None and 'voltage' in data:
             start_time = data['time'][0] if 'time' in data and len(data['time']) > 0 else 0
+            # Normalize capacity: absolute value, then start from 0
+            cap_raw = np.array(data['capacity'])
+            cap_abs = np.abs(cap_raw)
+            cap_normalized = cap_abs - cap_abs[0]  # Start from 0
             all_cycles_data.append({
                 'filename': filename,
                 'voltage': data['voltage'],
-                'capacity': np.abs(data['capacity']),
+                'capacity': cap_normalized,
                 'start_time': start_time,
                 'type_label': type_label,
             })
@@ -1623,77 +2154,243 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
     # Sort all cycles by start time
     all_cycles_data.sort(key=lambda x: x['start_time'])
 
-    total_cycles = len(all_cycles_data)
+    # Assign cycle numbers: D+C pair = 1 cycle
+    # Pattern: D1, C1, D2, C2, ... -> Cycle 1 (D), Cycle 1 (C), Cycle 2 (D), Cycle 2 (C), ...
+    cycle_number = 1
+    half_cycle_count = 0
+    for cyc_data in all_cycles_data:
+        cyc_data['cycle_number'] = cycle_number
+        half_cycle_count += 1
+        # After 2 half-cycles (D+C), increment cycle number
+        if half_cycle_count >= 2:
+            cycle_number += 1
+            half_cycle_count = 0
+
+    total_real_cycles = cycle_number if half_cycle_count == 0 else cycle_number
+    total_half_cycles = len(all_cycles_data)
 
     # Color palette for cycles (first=red, middle=black, last=blue)
-    def get_cycle_color(cycle_idx: int, total: int) -> str:
+    # Check for user-defined cycle colors in session state
+    cycle_colors_from_state = st.session_state.get('cycle_colors', {})
+
+    def get_cycle_color(cycle_num: int, total: int) -> str:
+        # First check session state for user-defined color
+        if cycle_num in cycle_colors_from_state:
+            return cycle_colors_from_state[cycle_num]
+        # Otherwise use default color scheme
         if total <= 1:
             return '#E63946'  # Red
-        elif cycle_idx == 0:
-            return '#E63946'  # Red for first
-        elif cycle_idx == total - 1:
-            return '#457B9D'  # Blue for last
+        elif cycle_num == 1:
+            return '#E63946'  # Red for first cycle
+        elif cycle_num == total:
+            return '#009BFF'  # Blue for last cycle
         else:
-            return '#000000'  # Black for middle
+            return '#000000'  # Black for middle cycles
+
+    # Get legend_by_color setting
+    legend_by_color = settings.get('legend_by_color', False)
+
+    # For legend_by_color mode, track which colors have been added to legend
+    color_cycles_map = {}  # color -> list of cycle numbers
+    colors_added_to_legend = set()
+
+    # First pass: collect color -> cycles mapping if legend_by_color is enabled
+    if legend_by_color:
+        for cyc_data in all_cycles_data:
+            cycle_num = cyc_data['cycle_number']
+            cycle_color = get_cycle_color(cycle_num, total_real_cycles)
+            if cycle_color not in color_cycles_map:
+                color_cycles_map[cycle_color] = []
+            if cycle_num not in color_cycles_map[cycle_color]:
+                color_cycles_map[cycle_color].append(cycle_num)
 
     # Add traces in time-sorted order
-    for global_cycle_idx, cyc_data in enumerate(all_cycles_data):
+    for idx, cyc_data in enumerate(all_cycles_data):
         filename = cyc_data['filename']
         voltage = cyc_data['voltage']
         capacity = cyc_data['capacity']
         type_label = cyc_data['type_label']
+        cycle_num = cyc_data['cycle_number']
 
-        # Convert capacity
+        # Convert capacity (using active_mass_g for mAh/g)
         if capacity_unit == 'mAh/g':
-            cap_display = capacity / mass_g
+            cap_display = capacity / active_mass_g
         else:
-            cap_display = capacity * mass_g * 1000 / area_cm2
+            cap_display = capacity / area_cm2  # mAh/cm²
 
-        # Get color based on global cycle index
-        cycle_color = get_cycle_color(global_cycle_idx, total_cycles)
+        # Get color based on cycle number (D+C pair has same color)
+        cycle_color = get_cycle_color(cycle_num, total_real_cycles)
 
-        # Create trace name: "Cycle N (C/D)" where N is sequential by time
-        cycle_label = f"Cycle {global_cycle_idx + 1}"
-        if type_label:
-            cycle_label += f" ({type_label})"
+        # Determine legend behavior
+        if legend_by_color:
+            # Group cycles by color in legend
+            if cycle_color not in colors_added_to_legend:
+                # First trace with this color - show in legend with grouped name
+                cycles_with_color = color_cycles_map[cycle_color]
+                if len(cycles_with_color) == 1:
+                    cycle_label = f"Cycle {cycles_with_color[0]}"
+                elif len(cycles_with_color) == 2:
+                    cycle_label = f"Cycle {cycles_with_color[0]}, {cycles_with_color[-1]}"
+                else:
+                    cycle_label = f"Cycle {cycles_with_color[0]}-{cycles_with_color[-1]}"
+                show_legend_for_trace = True
+                colors_added_to_legend.add(cycle_color)
+            else:
+                # Subsequent traces with same color - hide from legend
+                cycle_label = f"Cycle {cycle_num}"
+                show_legend_for_trace = False
+        else:
+            # Normal mode: each cycle has its own legend entry
+            cycle_label = f"Cycle {cycle_num}"
+            if type_label:
+                cycle_label += f" ({type_label})"
+            show_legend_for_trace = True
 
         fig.add_trace(go.Scatter(
             x=cap_display,
             y=voltage,
             mode='lines',
             name=cycle_label,
+            legendgroup=cycle_color if legend_by_color else None,
+            showlegend=show_legend_for_trace,
             line=dict(width=line_width, color=cycle_color),
             hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
         ))
 
-    fig.update_layout(
+    # Get figure size from settings
+    fig_width = settings.get('fig_width', 700)
+    fig_height = settings.get('fig_height', 500)
+
+    # Build xaxis and yaxis settings
+    xaxis_config = dict(
+        title=x_label,
+        title_font=dict(size=label_size, color='black'),
+        tickfont=dict(size=tick_size, color='black'),
+        tickcolor='black',
+        showgrid=False,
+        showline=True,
+        linewidth=axis_width,
+        linecolor='black',
+        mirror=True,
+        ticks='inside',
+        ticklen=tick_length,
+        tickwidth=tick_width,
+    )
+    yaxis_config = dict(
+        title='Voltage / V',
+        title_font=dict(size=label_size, color='black'),
+        tickfont=dict(size=tick_size, color='black'),
+        tickcolor='black',
+        showgrid=False,
+        showline=True,
+        linewidth=axis_width,
+        linecolor='black',
+        mirror=True,
+        ticks='inside',
+        ticklen=tick_length,
+        tickwidth=tick_width,
+    )
+
+    # Apply custom axis range
+    if axis_range:
+        if axis_range.get('x_min') is not None and axis_range.get('x_max') is not None:
+            xaxis_config['range'] = [axis_range['x_min'], axis_range['x_max']]
+        if axis_range.get('y_min') is not None and axis_range.get('y_max') is not None:
+            yaxis_config['range'] = [axis_range['y_min'], axis_range['y_max']]
+
+    # Check if we should show electron number on upper x-axis
+    composition = sample_info.get('composition', '')
+    can_show_electron = (
+        show_electron_number and
+        capacity_unit == 'mAh/g' and
+        composition
+    )
+
+    # Prepare layout dict
+    top_margin = 30
+    xaxis2_config = None
+
+    if can_show_electron:
+        # Import helper functions
+        from utils.helpers import format_formula_subscript
+        from utils.theocapacity import calculate_molar_mass, FARADAY_CONSTANT
+
+        try:
+            molar_mass = calculate_molar_mass(composition)
+            if molar_mass and molar_mass > 0:
+                formatted_composition = format_formula_subscript(composition)
+
+                # Upper x-axis title: number of reaction electron (n) in Composition
+                upper_x_title = f'number of reaction electron (<i>n</i>) in {formatted_composition}'
+
+                # Get x-axis range from data
+                if fig.data:
+                    all_x = []
+                    all_y = []
+                    for trace in fig.data:
+                        if trace.x is not None and len(trace.x) > 0:
+                            all_x.extend(trace.x)
+                        if trace.y is not None and len(trace.y) > 0:
+                            all_y.extend([v for v in trace.y if v is not None])
+
+                    if all_x:
+                        x_min, x_max = min(all_x), max(all_x)
+                        # Convert capacity (mAh/g) to electron numbers
+                        # n = capacity * M * 3.6 / F
+                        # where M = molar mass (g/mol), F = Faraday constant (C/mol)
+                        n_min = x_min * molar_mass * 3.6 / FARADAY_CONSTANT
+                        n_max = x_max * molar_mass * 3.6 / FARADAY_CONSTANT
+
+                        # Get y range for the invisible trace
+                        y_mid = (min(all_y) + max(all_y)) / 2 if all_y else 3.5
+
+                        # Add invisible trace for upper x-axis
+                        fig.add_trace(go.Scatter(
+                            x=[n_min, n_max],
+                            y=[y_mid, y_mid],
+                            mode='lines',
+                            line=dict(width=0, color='rgba(0,0,0,0)'),
+                            showlegend=False,
+                            hoverinfo='skip',
+                            xaxis='x2',
+                            yaxis='y'
+                        ))
+
+                        xaxis2_config = dict(
+                            overlaying='x',
+                            side='top',
+                            showgrid=False,
+                            showline=True,
+                            linewidth=axis_width,
+                            linecolor='black',
+                            tickcolor='black',
+                            tickfont=dict(family='Arial', color='black', size=tick_size),
+                            title=dict(
+                                text=upper_x_title,
+                                font=dict(family='Arial', color='black', size=label_size),
+                                standoff=5  # Reduce gap between title and axis
+                            ),
+                            ticks='inside',
+                            ticklen=tick_length,
+                            tickwidth=tick_width,
+                            mirror=False,
+                            zeroline=False,
+                            range=[n_min, n_max],
+                        )
+                        top_margin = 70  # Adjusted margin for upper x-axis title
+        except Exception:
+            pass  # If formula parsing fails, just skip the upper axis
+
+    layout_dict = dict(
         font={'family': 'Arial', 'color': 'black'},
         plot_bgcolor='white',
         paper_bgcolor='white',
-        height=500,
-        xaxis=dict(
-            title=x_label,
-            title_font=dict(size=label_size),
-            tickfont=dict(size=tick_size),
-            showgrid=False,
-            showline=True,
-            linewidth=1,
-            linecolor='black',
-            mirror=True,
-            ticks='inside',
-        ),
-        yaxis=dict(
-            title='Voltage / V',
-            title_font=dict(size=label_size),
-            tickfont=dict(size=tick_size),
-            showgrid=False,
-            showline=True,
-            linewidth=1,
-            linecolor='black',
-            mirror=True,
-            ticks='inside',
-        ),
-        showlegend=True,
+        width=fig_width,
+        height=fig_height,
+        margin=dict(l=70, r=40, t=top_margin, b=60),
+        xaxis=xaxis_config,
+        yaxis=yaxis_config,
+        showlegend=show_legend,
         legend=dict(
             yanchor="top", y=0.99, xanchor="right", x=0.99,
             font=dict(size=settings.get('legend_font_size', 12)),
@@ -1701,78 +2398,157 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
         ),
     )
 
+    if xaxis2_config:
+        layout_dict['xaxis2'] = xaxis2_config
+
+    fig.update_layout(**layout_dict)
+
     return fig
 
 
 def create_multi_file_dqdv_plot(sorted_files: list, settings: dict, sample_info: dict) -> go.Figure:
-    """Create dQ/dV plot for multiple files"""
+    """Create dQ/dV plot for multiple files with time-based cycle pairing"""
     fig = go.Figure()
 
-    mass_g = sample_info.get('mass_mg', 1.0) / 1000
-    if mass_g <= 0:
-        mass_g = 0.001
+    # Calculate active mass considering active_ratio (same as single-file version)
+    mass_mg = sample_info.get('mass_mg', 10.0)
+    active_ratio = sample_info.get('active_ratio', 1.0)
+    active_mass_g = mass_mg * active_ratio / 1000  # g
+    if active_mass_g <= 0:
+        active_mass_g = 0.001
 
     tick_size = settings.get('tick_font_size', 22)
     label_size = settings.get('axis_label_font_size', 22)
     line_width = settings.get('line_width', 1)
 
+    # Collect all half-cycles from all files with their start times
+    all_cycles_data = []
     for file_info in sorted_files:
         data = file_info['data']
-        color = file_info['color']
-        cycle_num = file_info['cycle_num']
+        is_charge = file_info.get('is_charge', False)
+        is_discharge = file_info.get('is_discharge', False)
+        type_label = 'C' if is_charge else ('D' if is_discharge else '')
 
         if 'cycles' in data and len(data['cycles']) > 0:
-            for cycle in data['cycles']:
+            for i, cycle in enumerate(data['cycles']):
                 if 'voltage' not in cycle or 'capacity' not in cycle:
                     continue
-                voltage = cycle['voltage']
-                capacity = cycle['capacity']
+                start_time = cycle['time'][0] if 'time' in cycle and len(cycle['time']) > 0 else 0
+                all_cycles_data.append({
+                    'voltage': cycle['voltage'],
+                    'capacity': cycle['capacity'],
+                    'start_time': start_time,
+                    'type_label': type_label,
+                })
+        elif 'capacity' in data and data['capacity'] is not None and 'voltage' in data:
+            start_time = data['time'][0] if 'time' in data and len(data['time']) > 0 else 0
+            all_cycles_data.append({
+                'voltage': data['voltage'],
+                'capacity': data['capacity'],
+                'start_time': start_time,
+                'type_label': type_label,
+            })
 
-                # Calculate dQ/dV
-                if len(voltage) > 2:
-                    dv = np.diff(voltage)
-                    dq = np.diff(capacity)
+    # Sort by start time
+    all_cycles_data.sort(key=lambda x: x['start_time'])
 
-                    # Avoid division by zero
-                    dv[dv == 0] = 1e-10
-                    dqdv = dq / dv / mass_g
+    # Assign cycle numbers (D+C pair = 1 cycle)
+    cycle_number = 1
+    half_cycle_count = 0
+    for cyc_data in all_cycles_data:
+        cyc_data['cycle_number'] = cycle_number
+        half_cycle_count += 1
+        if half_cycle_count >= 2:
+            cycle_number += 1
+            half_cycle_count = 0
 
-                    v_mid = (voltage[:-1] + voltage[1:]) / 2
+    total_real_cycles = cycle_number if half_cycle_count == 0 else cycle_number
 
-                    fig.add_trace(go.Scatter(
-                        x=v_mid,
-                        y=dqdv,
-                        mode='lines',
-                        name=f"Cycle {cycle_num + 1}",
-                        line=dict(width=line_width, color=color),
-                    ))
+    # Get cycle colors from session state or use defaults
+    cycle_colors_from_state = st.session_state.get('cycle_colors', {})
+
+    def get_cycle_color(cycle_num: int, total: int) -> str:
+        if cycle_num in cycle_colors_from_state:
+            return cycle_colors_from_state[cycle_num]
+        if total <= 1:
+            return '#E63946'
+        elif cycle_num == 1:
+            return '#E63946'
+        elif cycle_num == total:
+            return '#009BFF'
+        else:
+            return '#000000'
+
+    # Add traces
+    for cyc_data in all_cycles_data:
+        voltage = np.array(cyc_data['voltage'])
+        capacity = np.array(cyc_data['capacity'])
+        cycle_num = cyc_data['cycle_number']
+        type_label = cyc_data['type_label']
+
+        # Calculate dQ/dV
+        if len(voltage) > 2:
+            dv = np.diff(voltage)
+            dq = np.diff(capacity)
+
+            # Avoid division by zero
+            dv[dv == 0] = 1e-10
+            dqdv = dq / dv / active_mass_g
+
+            v_mid = (voltage[:-1] + voltage[1:]) / 2
+
+            cycle_color = get_cycle_color(cycle_num, total_real_cycles)
+            label = f"Cycle {cycle_num}"
+            if type_label:
+                label += f" ({type_label})"
+
+            fig.add_trace(go.Scatter(
+                x=v_mid,
+                y=dqdv,
+                mode='lines',
+                name=label,
+                line=dict(width=line_width, color=cycle_color),
+            ))
+
+    axis_width = settings.get('axis_width', 1)
+    tick_length = settings.get('tick_length', 6)
+    tick_width = settings.get('tick_width', 1)
 
     fig.update_layout(
         font={'family': 'Arial', 'color': 'black'},
         plot_bgcolor='white',
         paper_bgcolor='white',
         height=400,
+        margin=dict(l=70, r=40, t=40, b=60),
         xaxis=dict(
             title='Voltage / V',
-            title_font=dict(size=label_size),
-            tickfont=dict(size=tick_size),
+            title_font=dict(size=label_size, color='black'),
+            tickfont=dict(size=tick_size, color='black'),
             showgrid=False,
             showline=True,
-            linewidth=1,
+            linewidth=axis_width,
             linecolor='black',
             mirror=True,
             ticks='inside',
+            ticklen=tick_length,
+            tickwidth=tick_width,
+            tickcolor='black',
+            zeroline=False,
         ),
         yaxis=dict(
             title='dQ/dV / mAh g⁻¹ V⁻¹',
-            title_font=dict(size=label_size),
-            tickfont=dict(size=tick_size),
+            title_font=dict(size=label_size, color='black'),
+            tickfont=dict(size=tick_size, color='black'),
             showgrid=False,
             showline=True,
-            linewidth=1,
+            linewidth=axis_width,
             linecolor='black',
             mirror=True,
             ticks='inside',
+            ticklen=tick_length,
+            tickwidth=tick_width,
+            tickcolor='black',
+            zeroline=False,
         ),
         showlegend=True,
         legend=dict(font=dict(size=10)),
@@ -1787,54 +2563,95 @@ def create_multi_file_cycle_performance(
 ) -> go.Figure:
     """
     Create cycle performance plot for multiple files with CE calculation.
+    Uses time-based sorting and D+C pairing (same as CD plot).
 
     CE calculation:
-    - If discharge display: CE = discharge_cap / charge_cap_before_discharge
-    - If charge display: CE = charge_cap / discharge_cap_before_charge
+    - If discharge display: CE = discharge_cap / charge_cap (same cycle)
+    - If charge display: CE = charge_cap / discharge_cap (same cycle)
     """
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    mass_g = sample_info.get('mass_mg', 1.0) / 1000
-    if mass_g <= 0:
-        mass_g = 0.001
+    # Calculate active mass considering active_ratio (same as single-file version)
+    mass_mg = sample_info.get('mass_mg', 10.0)
+    active_ratio = sample_info.get('active_ratio', 1.0)
+    active_mass_g = mass_mg * active_ratio / 1000  # g
+    if active_mass_g <= 0:
+        active_mass_g = 0.001
 
     tick_size = settings.get('tick_font_size', 22)
     label_size = settings.get('axis_label_font_size', 22)
 
-    # Collect capacity data per cycle
-    cycle_data = {}  # {cycle_num: {'charge_cap': [], 'discharge_cap': [], 'current_mA': []}}
-
+    # Collect all half-cycles from all files with their start times
+    all_half_cycles = []
     for file_info in sorted_files:
         data = file_info['data']
-        cycle_num = file_info['cycle_num']
-        is_charge = file_info['is_charge']
-        is_discharge = file_info['is_discharge']
-        current_mA = file_info['current_mA']
+        filename = file_info['filename']
+        is_charge = file_info.get('is_charge', False)
+        is_discharge = file_info.get('is_discharge', False)
+        current_mA = file_info.get('current_mA', 0)
 
-        if cycle_num not in cycle_data:
-            cycle_data[cycle_num] = {'charge_cap': None, 'discharge_cap': None, 'current_mA': current_mA}
-
-        # Get capacity from cycles
-        cap = 0
         if 'cycles' in data and len(data['cycles']) > 0:
-            for cycle in data['cycles']:
-                if 'capacity_mAh' in cycle:
-                    cap = cycle['capacity_mAh'] / mass_g
-                elif 'capacity' in cycle and len(cycle['capacity']) > 0:
-                    cap = (np.max(np.abs(cycle['capacity'])) - np.min(np.abs(cycle['capacity']))) / mass_g
+            for i, cycle in enumerate(data['cycles']):
+                start_time = cycle['time'][0] if 'time' in cycle and len(cycle['time']) > 0 else 0
+                # Calculate capacity for this half-cycle
+                cap_raw = np.array(cycle.get('capacity', []))
+                if len(cap_raw) > 0:
+                    cap_abs = np.abs(cap_raw)
+                    cap = (cap_abs[-1] - cap_abs[0]) / active_mass_g  # Normalized capacity
+                else:
+                    cap = 0
+                all_half_cycles.append({
+                    'start_time': start_time,
+                    'type': 'C' if is_charge else ('D' if is_discharge else ''),
+                    'capacity': cap,
+                    'current_mA': current_mA,
+                })
+        elif 'capacity' in data and data['capacity'] is not None:
+            start_time = data['time'][0] if 'time' in data and len(data['time']) > 0 else 0
+            cap_raw = np.array(data['capacity'])
+            if len(cap_raw) > 0:
+                cap_abs = np.abs(cap_raw)
+                cap = (cap_abs[-1] - cap_abs[0]) / active_mass_g
+            else:
+                cap = 0
+            all_half_cycles.append({
+                'start_time': start_time,
+                'type': 'C' if is_charge else ('D' if is_discharge else ''),
+                'capacity': cap,
+                'current_mA': current_mA,
+            })
 
-        if is_charge:
-            cycle_data[cycle_num]['charge_cap'] = cap
-        elif is_discharge:
-            cycle_data[cycle_num]['discharge_cap'] = cap
+    # Sort by start time
+    all_half_cycles.sort(key=lambda x: x['start_time'])
 
-        # Update current if higher
-        if current_mA > cycle_data[cycle_num].get('current_mA', 0):
-            cycle_data[cycle_num]['current_mA'] = current_mA
+    # Assign cycle numbers (D+C pair = 1 cycle)
+    cycle_number = 1
+    half_cycle_count = 0
+    for hc in all_half_cycles:
+        hc['cycle_number'] = cycle_number
+        half_cycle_count += 1
+        if half_cycle_count >= 2:
+            cycle_number += 1
+            half_cycle_count = 0
+
+    # Group by cycle number
+    cycle_data = {}  # {cycle_num: {'charge_cap': None, 'discharge_cap': None, 'current_mA': 0}}
+    for hc in all_half_cycles:
+        cn = hc['cycle_number']
+        if cn not in cycle_data:
+            cycle_data[cn] = {'charge_cap': None, 'discharge_cap': None, 'current_mA': 0}
+
+        if hc['type'] == 'C':
+            cycle_data[cn]['charge_cap'] = hc['capacity']
+        elif hc['type'] == 'D':
+            cycle_data[cn]['discharge_cap'] = hc['capacity']
+
+        if hc['current_mA'] > cycle_data[cn]['current_mA']:
+            cycle_data[cn]['current_mA'] = hc['current_mA']
 
     # Build plot arrays
     cycle_nums = sorted(cycle_data.keys())
-    x_data = [c + 1 for c in cycle_nums]  # 1-indexed
+    x_data = list(cycle_nums)  # Already 1-indexed from pairing
 
     if capacity_display == 'discharge':
         y_data = [cycle_data[c].get('discharge_cap', 0) or 0 for c in cycle_nums]
@@ -1845,20 +2662,13 @@ def create_multi_file_cycle_performance(
 
     # Calculate CE
     ce_data = []
-    for i, c in enumerate(cycle_nums):
+    for c in cycle_nums:
         charge_cap = cycle_data[c].get('charge_cap')
         discharge_cap = cycle_data[c].get('discharge_cap')
 
-        if capacity_display == 'discharge' and charge_cap and discharge_cap:
-            # CE = discharge / charge (same cycle)
-            ce = (discharge_cap / charge_cap) * 100 if charge_cap > 0 else 0
-        elif capacity_display == 'charge' and i > 0:
-            # CE = charge / previous discharge
-            prev_discharge = cycle_data[cycle_nums[i-1]].get('discharge_cap')
-            if prev_discharge and charge_cap:
-                ce = (charge_cap / prev_discharge) * 100 if prev_discharge > 0 else 0
-            else:
-                ce = 0
+        if charge_cap and discharge_cap and charge_cap > 0:
+            # CE = discharge / charge (same cycle pair)
+            ce = (discharge_cap / charge_cap) * 100
         else:
             ce = 0
         ce_data.append(ce)
@@ -1886,8 +2696,8 @@ def create_multi_file_cycle_performance(
             y=ce_data,
             mode='lines+markers',
             name='CE',
-            line=dict(width=2, color='#457B9D'),
-            marker=dict(size=8, color='#457B9D'),
+            line=dict(width=2, color='#009BFF'),
+            marker=dict(size=8, color='#009BFF'),
         ),
         secondary_y=True
     )
@@ -1906,11 +2716,16 @@ def create_multi_file_cycle_performance(
                 ))
         fig.update_layout(annotations=annotations)
 
+    axis_width = settings.get('axis_width', 1)
+    tick_length = settings.get('tick_length', 6)
+    tick_width = settings.get('tick_width', 1)
+
     fig.update_layout(
         font={'family': 'Arial', 'color': 'black'},
         plot_bgcolor='white',
         paper_bgcolor='white',
         height=400,
+        margin=dict(l=70, r=70, t=40, b=60),
         showlegend=True,
         legend=dict(
             yanchor="top", y=0.99, xanchor="left", x=0.01,
@@ -1918,101 +2733,238 @@ def create_multi_file_cycle_performance(
         ),
     )
 
-    # Left Y-axis (Capacity)
+    # Left Y-axis (Capacity, black)
     fig.update_yaxes(
         title_text=y_label,
         title_font=dict(size=label_size, color='black'),
         tickfont=dict(size=tick_size, color='black'),
         showgrid=False,
         showline=True,
-        linewidth=1,
+        linewidth=axis_width,
         linecolor='black',
         ticks='inside',
+        ticklen=tick_length,
+        tickwidth=tick_width,
+        tickcolor='black',
+        zeroline=False,
         secondary_y=False
     )
 
-    # Right Y-axis (CE)
+    # Right Y-axis (CE, blue)
     fig.update_yaxes(
         title_text='Coulombic Efficiency / %',
-        title_font=dict(size=label_size, color='#457B9D'),
-        tickfont=dict(size=tick_size, color='#457B9D'),
+        title_font=dict(size=label_size, color='#009BFF'),
+        tickfont=dict(size=tick_size, color='#009BFF'),
         showgrid=False,
         showline=True,
-        linewidth=1,
-        linecolor='#457B9D',
+        linewidth=axis_width,
+        linecolor='#009BFF',
         ticks='inside',
+        ticklen=tick_length,
+        tickwidth=tick_width,
+        tickcolor='#009BFF',
         range=[0, 105],
+        zeroline=False,
         secondary_y=True
     )
 
-    # X-axis
+    # X-axis (black)
     fig.update_xaxes(
         title_text='Cycle Number',
-        title_font=dict(size=label_size),
-        tickfont=dict(size=tick_size),
+        title_font=dict(size=label_size, color='black'),
+        tickfont=dict(size=tick_size, color='black'),
         showgrid=False,
         showline=True,
-        linewidth=1,
+        linewidth=axis_width,
         linecolor='black',
         mirror=True,
         ticks='inside',
+        ticklen=tick_length,
+        tickwidth=tick_width,
+        tickcolor='black',
+        zeroline=False,
     )
 
     return fig
 
 
+def build_cycle_history_data(sorted_files, data, sample_info):
+    """
+    Build cycle history data with numeric values for proper sorting.
+    Returns list of dicts with cycle info and stores in session state.
+    """
+    mass_mg = sample_info.get('mass_mg', 10.0)
+    active_ratio = sample_info.get('active_ratio', 1.0)
+    active_mass_g = mass_mg * active_ratio / 1000  # g
+    area_cm2 = sample_info.get('area_cm2', 1.0)
+
+    cycle_history = []
+
+    if sorted_files and len(sorted_files) > 0:
+        # Multi-file mode
+        all_half_cycles = []
+        for file_info in sorted_files:
+            fdata = file_info['data']
+            is_charge = file_info.get('is_charge', False)
+            is_discharge = file_info.get('is_discharge', False)
+            current_mA = file_info.get('current_mA', 0)
+
+            if 'cycles' in fdata and len(fdata['cycles']) > 0:
+                for cycle in fdata['cycles']:
+                    start_time = cycle['time'][0] if 'time' in cycle and len(cycle['time']) > 0 else 0
+                    cap_raw = np.array(cycle.get('capacity', []))
+                    if len(cap_raw) > 0:
+                        cap_abs = np.abs(cap_raw)
+                        cap_mAh = cap_abs[-1] - cap_abs[0]
+                    else:
+                        cap_mAh = 0
+                    all_half_cycles.append({
+                        'start_time': float(start_time),
+                        'type': 'C' if is_charge else ('D' if is_discharge else ''),
+                        'capacity_mAh': float(cap_mAh),
+                        'current_mA': float(current_mA),
+                    })
+            elif 'capacity' in fdata and fdata['capacity'] is not None:
+                start_time = fdata['time'][0] if 'time' in fdata and len(fdata['time']) > 0 else 0
+                cap_raw = np.array(fdata['capacity'])
+                if len(cap_raw) > 0:
+                    cap_abs = np.abs(cap_raw)
+                    cap_mAh = cap_abs[-1] - cap_abs[0]
+                else:
+                    cap_mAh = 0
+                all_half_cycles.append({
+                    'start_time': float(start_time),
+                    'type': 'C' if is_charge else ('D' if is_discharge else ''),
+                    'capacity_mAh': float(cap_mAh),
+                    'current_mA': float(current_mA),
+                })
+
+        # Sort by start time
+        all_half_cycles.sort(key=lambda x: x['start_time'])
+
+        # Assign cycle numbers (D+C pair = 1 cycle)
+        cycle_number = 1
+        half_cycle_count = 0
+        for hc in all_half_cycles:
+            hc['cycle_number'] = cycle_number
+            half_cycle_count += 1
+            if half_cycle_count >= 2:
+                cycle_number += 1
+                half_cycle_count = 0
+
+        # Build history with CE calculation
+        prev_charge_cap = None
+        for hc in all_half_cycles:
+            cap_mAh = hc['capacity_mAh']
+            cap_mAh_g = cap_mAh / active_mass_g if active_mass_g > 0 else 0
+            cap_mAh_cm2 = cap_mAh / area_cm2 if area_cm2 > 0 else 0
+
+            ce = None
+            if hc['type'] == 'D' and prev_charge_cap is not None and prev_charge_cap > 0:
+                ce = (cap_mAh / prev_charge_cap) * 100
+
+            if hc['type'] == 'C':
+                prev_charge_cap = cap_mAh
+
+            cycle_history.append({
+                'time_s': hc['start_time'],
+                'cycle': hc['cycle_number'],
+                'type': hc['type'],
+                'current_mA': hc['current_mA'],
+                'cap_mAh_g': cap_mAh_g,
+                'cap_mAh_cm2': cap_mAh_cm2,
+                'ce': ce,
+            })
+
+    elif data and 'cycles' in data and len(data['cycles']) > 0:
+        # Single-file mode
+        cycles = data['cycles']
+        prev_charge_cap = None
+
+        for i, cycle in enumerate(cycles):
+            is_charge = cycle.get('is_charge', False)
+            is_discharge = cycle.get('is_discharge', False)
+            c_d = 'C' if is_charge else ('D' if is_discharge else '')
+
+            cap_mAh = 0
+            if 'capacity_mAh' in cycle:
+                cap_mAh = cycle['capacity_mAh']
+            elif 'capacity' in cycle:
+                cap_raw = np.array(cycle['capacity'])
+                if len(cap_raw) > 0:
+                    cap_abs = np.abs(cap_raw)
+                    cap_mAh = cap_abs[-1] - cap_abs[0]
+
+            cap_mAh_g = cap_mAh / active_mass_g if active_mass_g > 0 else 0
+            cap_mAh_cm2 = cap_mAh / area_cm2 if area_cm2 > 0 else 0
+
+            curr = cycle.get('current_mA', 0)
+            time_s = cycle['time'][0] if 'time' in cycle and len(cycle['time']) > 0 else 0
+
+            ce = None
+            if c_d == 'D' and prev_charge_cap is not None and prev_charge_cap > 0:
+                ce = (cap_mAh / prev_charge_cap) * 100
+
+            if c_d == 'C':
+                prev_charge_cap = cap_mAh
+
+            cycle_history.append({
+                'time_s': float(time_s),
+                'cycle': cycle.get('cycle_number', i + 1),
+                'type': c_d,
+                'current_mA': float(curr),
+                'cap_mAh_g': float(cap_mAh_g),
+                'cap_mAh_cm2': float(cap_mAh_cm2),
+                'ce': ce,
+            })
+
+    # Store in session state for use by other components
+    st.session_state.cycle_history = cycle_history
+    return cycle_history
+
+
 def render_data_summary(data, sample_info):
-    """Render data summary metrics"""
+    """Render data summary metrics and cycle history table"""
     with st.expander("Data Summary", expanded=True):
-        if 'cycles' in data and len(data['cycles']) > 0:
-            cycles = data['cycles']
-            n_cycles = len(cycles)
+        # Get sorted files for multi-file mode
+        selected_files = st.session_state.selected_files
+        sorted_files = None
 
-            mass_g = sample_info['mass_mg'] / 1000
+        if len(selected_files) > 1:
+            files_data = {fn: st.session_state.files[fn] for fn in selected_files if fn in st.session_state.files}
+            sorted_files = sort_files_by_time_and_assign_cycles(files_data)
 
-            capacities_charge = []
-            capacities_discharge = []
-            efficiencies = []
+        # Build cycle history data (stores in session state)
+        cycle_history = build_cycle_history_data(sorted_files, data, sample_info)
 
-            for cycle in cycles:
-                if 'capacity_charge_mAh' in cycle and cycle['capacity_charge_mAh'] is not None:
-                    cap_charge = cycle['capacity_charge_mAh'] / mass_g if mass_g > 0 else 0
-                    capacities_charge.append(cap_charge)
-                if 'capacity_discharge_mAh' in cycle and cycle['capacity_discharge_mAh'] is not None:
-                    cap_discharge = cycle['capacity_discharge_mAh'] / mass_g if mass_g > 0 else 0
-                    capacities_discharge.append(cap_discharge)
-                # Also check capacity_mAh from half_cycle parsing
-                if 'capacity_mAh' in cycle and cycle.get('is_discharge'):
-                    cap = cycle['capacity_mAh'] / mass_g if mass_g > 0 else cycle['capacity_mAh']
-                    capacities_discharge.append(cap)
-                elif 'capacity_mAh' in cycle and cycle.get('is_charge'):
-                    cap = cycle['capacity_mAh'] / mass_g if mass_g > 0 else cycle['capacity_mAh']
-                    capacities_charge.append(cap)
+        # Display table with numeric values for proper sorting
+        if cycle_history:
+            st.markdown("**Cycle History**")
 
-                if 'coulombic_efficiency' in cycle and cycle['coulombic_efficiency'] is not None:
-                    efficiencies.append(cycle['coulombic_efficiency'] * 100)
+            # Create DataFrame with numeric columns
+            df_data = []
+            for row in cycle_history:
+                # Format current with sign for display
+                curr = row['current_mA']
+                if row['type'] == 'D':
+                    curr_display = f"-{abs(curr):.2f}" if curr != 0 else "0"
+                else:
+                    curr_display = f"+{abs(curr):.2f}" if curr != 0 else "0"
 
-            col1, col2, col3, col4 = st.columns(4)
+                df_data.append({
+                    'Time (s)': round(row['time_s'], 1),  # Numeric for sorting
+                    'Cycle': row['cycle'],
+                    'C/D': row['type'],
+                    'I (mA)': curr_display,
+                    'Q (mAh/g)': round(row['cap_mAh_g'], 2),  # Numeric for sorting
+                    'Q (mAh/cm²)': round(row['cap_mAh_cm2'], 4),  # Numeric for sorting
+                    'CE (%)': round(row['ce'], 1) if row['ce'] is not None else None,  # Numeric for sorting
+                })
 
-            with col1:
-                st.metric("Total Cycles", n_cycles)
-
-            with col2:
-                if capacities_charge:
-                    st.metric("First Charge", f"{capacities_charge[0]:.2f} mAh/g")
-                elif capacities_discharge:
-                    st.metric("First Cap", f"{capacities_discharge[0]:.4f} mAh/g")
-
-            with col3:
-                if capacities_discharge:
-                    st.metric("First Discharge", f"{capacities_discharge[0]:.4f} mAh/g")
-
-            with col4:
-                if efficiencies:
-                    st.metric("Avg. CE", f"{np.mean(efficiencies):.1f}%")
-
+            df_summary = pd.DataFrame(df_data)
+            st.dataframe(df_summary, use_container_width=True, hide_index=True)
         else:
-            # Raw data without cycle info
+            # Fallback: show basic data info
             col1, col2 = st.columns(2)
             with col1:
                 if 'time' in data and data['time'] is not None:

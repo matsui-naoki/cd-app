@@ -8,6 +8,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Optional, List, Dict, Tuple, Any
 
+# Import formula formatting helper
+try:
+    from utils.helpers import format_formula_subscript
+except ImportError:
+    def format_formula_subscript(s):
+        return s
+
 # Color palette optimized for publications
 COLORS = [
     '#000000',  # Black
@@ -359,7 +366,8 @@ def create_capacity_voltage_plot(
     settings: dict = None,
     sample_info: dict = None,
     selected_cycles: List[int] = None,
-    color_mode: str = 'cycle'
+    color_mode: str = 'cycle',
+    show_electron_number: bool = False
 ) -> go.Figure:
     """
     Create Voltage vs Capacity plot
@@ -371,12 +379,16 @@ def create_capacity_voltage_plot(
     settings : dict
         Plot settings
     sample_info : dict
-        Sample information (with capacity_unit, mass_mg, active_ratio, area_cm2)
+        Sample information (with capacity_unit, mass_mg, active_ratio, area_cm2,
+        theoretical_capacity, electron_number, composition)
     selected_cycles : list
         List of cycle numbers to display (None = all)
     color_mode : str
         'cycle': color by cycle number (rainbow)
         'charge_discharge': red for charge, blue for discharge
+    show_electron_number : bool
+        If True and theoretical capacity is available with mAh/g unit,
+        show electron number on upper x-axis
 
     Returns
     -------
@@ -497,6 +509,7 @@ def create_capacity_voltage_plot(
     # Update layout
     axis_settings = common_axis_settings(settings)
     label_size = settings.get('axis_label_font_size', 16)
+    tick_size = settings.get('tick_font_size', 14)
     label_font = dict(family='Arial', color='black', size=label_size)
     legend_font_size = settings.get('legend_font_size', 12)
     show_legend = settings.get('show_legend', True)
@@ -510,24 +523,113 @@ def create_capacity_voltage_plot(
 
     voltage_label = settings.get('voltage_label', 'Voltage / V')
 
-    fig.update_layout(
+    # Check if we should show electron number on upper x-axis
+    # Only for mAh/g unit and when composition is provided
+    composition = sample_info.get('composition', '')
+    can_show_electron = (
+        show_electron_number and
+        capacity_unit == 'mAh/g' and
+        composition
+    )
+
+    # Base layout
+    layout_dict = {
         **common_layout(settings),
-        height=450,
-        uirevision='vq_plot',
-        xaxis=dict(
+        'height': 450,
+        'uirevision': 'vq_plot',
+        'xaxis': dict(
             **axis_settings,
             title=dict(text=cap_label, font=label_font),
         ),
-        yaxis=dict(
+        'yaxis': dict(
             **axis_settings,
             title=dict(text=voltage_label, font=label_font),
         ),
-        showlegend=show_legend,
-        legend=dict(
+        'showlegend': show_legend,
+        'legend': dict(
             yanchor="top", y=0.99, xanchor="right", x=0.99,
             font=dict(size=legend_font_size), bgcolor='rgba(255,255,255,0.8)'
         )
-    )
+    }
+
+    # Add upper x-axis for electron number if conditions are met
+    if can_show_electron:
+        try:
+            # Import molar mass calculation
+            from utils.theocapacity import calculate_molar_mass, FARADAY_CONSTANT
+
+            molar_mass = calculate_molar_mass(composition)
+            if molar_mass and molar_mass > 0:
+                # Format composition with subscript numbers
+                formatted_composition = format_formula_subscript(composition)
+
+                # Upper x-axis title: number of reaction electron (n) in Composition
+                upper_x_title = f'number of reaction electron (<i>n</i>) in {formatted_composition}'
+
+                # For the secondary axis, we need to set it overlaying the primary x-axis
+                layout_dict['xaxis2'] = dict(
+                    overlaying='x',
+                    side='top',
+                    showgrid=False,
+                    showline=True,
+                    linewidth=axis_settings.get('linewidth', 1.5),
+                    linecolor='black',
+                    tickcolor='black',
+                    tickfont=dict(family='Arial', color='black', size=tick_size),
+                    title=dict(
+                        text=upper_x_title,
+                        font=label_font,
+                        standoff=5  # Reduce gap between title and axis
+                    ),
+                    ticks='inside',
+                    ticklen=axis_settings.get('ticklen', 6),
+                    mirror=False,
+                    zeroline=False,
+                )
+
+                # Get the current x-axis range from data
+                if fig.data:
+                    all_x = []
+                    all_y = []
+                    for trace in fig.data:
+                        if trace.x is not None and len(trace.x) > 0:
+                            all_x.extend(trace.x)
+                        if trace.y is not None and len(trace.y) > 0:
+                            all_y.extend([v for v in trace.y if v is not None])
+                    if all_x:
+                        x_min, x_max = min(all_x), max(all_x)
+                        # Convert capacity (mAh/g) to electron numbers
+                        # n = capacity * M * 3.6 / F
+                        n_min = x_min * molar_mass * 3.6 / FARADAY_CONSTANT
+                        n_max = x_max * molar_mass * 3.6 / FARADAY_CONSTANT
+
+                        # Get y range for the invisible trace
+                        y_mid = (min(all_y) + max(all_y)) / 2 if all_y else 3.5
+
+                        # Add invisible trace for upper x-axis
+                        fig.add_trace(go.Scatter(
+                            x=[n_min, n_max],
+                            y=[y_mid, y_mid],
+                            mode='lines',
+                            line=dict(width=0, color='rgba(0,0,0,0)'),
+                            showlegend=False,
+                            hoverinfo='skip',
+                            xaxis='x2',
+                            yaxis='y'
+                        ))
+
+                        # Set the x2 axis range explicitly
+                        layout_dict['xaxis2']['range'] = [n_min, n_max]
+
+                # Adjust top margin to accommodate the upper x-axis title
+                if 'margin' in layout_dict:
+                    layout_dict['margin']['t'] = 70
+                else:
+                    layout_dict['margin'] = {'l': 80, 'r': 20, 't': 70, 'b': 60}
+        except Exception:
+            pass  # If formula parsing fails, skip the upper axis
+
+    fig.update_layout(**layout_dict)
 
     return fig
 

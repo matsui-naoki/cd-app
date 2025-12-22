@@ -173,3 +173,41 @@ section[data-testid="stSidebar"] .stNumberInput > div > div > input {
     font-size: 0.8rem !important;
     font-weight: bold !important;
 }
+
+/* Fix expander content height and overflow issues */
+[data-testid="stExpander"] {
+    overflow: visible !important;
+}
+
+[data-testid="stExpander"] > div {
+    overflow: visible !important;
+    max-height: none !important;
+}
+
+[data-testid="stExpander"] > div > div {
+    overflow: visible !important;
+    max-height: none !important;
+}
+
+[data-testid="stExpander"] [data-testid="stVerticalBlockBorderWrapper"] {
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+/* Ensure expander content area is not clipped */
+[data-testid="stExpander"] [data-testid="stVerticalBlock"] {
+    overflow: visible !important;
+    max-height: none !important;
+}
+
+/* Ensure color preview row has proper height */
+[data-testid="stExpander"] .stColumns {
+    min-height: 30px !important;
+}
+
+/* Specific fix for Cycle Colors expander content */
+[data-testid="stExpanderDetails"] {
+    overflow: visible !important;
+    max-height: none !important;
+}

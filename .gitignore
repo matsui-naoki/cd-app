@@ -44,6 +44,9 @@ test_data/
 tmp/
 temp/
 
+# Backup files
+*_backup_*.py
+
 # Igor procedure files (reference only)
 *.ipf
 
