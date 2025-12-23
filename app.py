@@ -1100,7 +1100,7 @@ def render_main_plot():
                     st.rerun()
 
             # Row 3: Legend settings
-            col_leg1, col_leg2, col_leg3 = st.columns(3)
+            col_leg1, col_leg2, col_leg3, col_leg4 = st.columns(4)
             with col_leg1:
                 new_show_legend = st.checkbox(
                     "Show legend",
@@ -1121,6 +1121,21 @@ def render_main_plot():
                     st.session_state.plot_settings['legend_by_color'] = new_legend_by_color
                     st.rerun()
             with col_leg3:
+                legend_positions = [
+                    'top right', 'top left', 'bottom right', 'bottom left',
+                    'top center', 'bottom center', 'middle right', 'middle left'
+                ]
+                current_pos = st.session_state.plot_settings.get('legend_position', 'top right')
+                new_legend_position = st.selectbox(
+                    "Legend position",
+                    options=legend_positions,
+                    index=legend_positions.index(current_pos) if current_pos in legend_positions else 0,
+                    key='cd_legend_position'
+                )
+                if new_legend_position != st.session_state.plot_settings.get('legend_position'):
+                    st.session_state.plot_settings['legend_position'] = new_legend_position
+                    st.rerun()
+            with col_leg4:
                 new_legend_font_size = st.slider(
                     "Legend font size",
                     min_value=8, max_value=24,
@@ -2078,6 +2093,21 @@ def render_custom_plot():
         st.text(f"Data points: {len(x_data)}")
 
 
+def get_legend_position_config(position: str) -> dict:
+    """Convert legend position string to Plotly legend config"""
+    positions = {
+        'top right': {'yanchor': 'top', 'y': 0.99, 'xanchor': 'right', 'x': 0.99},
+        'top left': {'yanchor': 'top', 'y': 0.99, 'xanchor': 'left', 'x': 0.01},
+        'bottom right': {'yanchor': 'bottom', 'y': 0.01, 'xanchor': 'right', 'x': 0.99},
+        'bottom left': {'yanchor': 'bottom', 'y': 0.01, 'xanchor': 'left', 'x': 0.01},
+        'top center': {'yanchor': 'top', 'y': 0.99, 'xanchor': 'center', 'x': 0.5},
+        'bottom center': {'yanchor': 'bottom', 'y': 0.01, 'xanchor': 'center', 'x': 0.5},
+        'middle right': {'yanchor': 'middle', 'y': 0.5, 'xanchor': 'right', 'x': 0.99},
+        'middle left': {'yanchor': 'middle', 'y': 0.5, 'xanchor': 'left', 'x': 0.01},
+    }
+    return positions.get(position, positions['top right'])
+
+
 def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: dict, axis_range: dict = None, show_electron_number: bool = False) -> go.Figure:
     """Create Charge-Discharge plot for multiple files with custom colors
 
@@ -2386,6 +2416,10 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
         except Exception:
             pass  # If formula parsing fails, just skip the upper axis
 
+    # Get legend position configuration
+    legend_position = settings.get('legend_position', 'top right')
+    legend_pos_config = get_legend_position_config(legend_position)
+
     layout_dict = dict(
         font={'family': 'Arial', 'color': 'black'},
         plot_bgcolor='white',
@@ -2397,7 +2431,7 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
         yaxis=yaxis_config,
         showlegend=show_legend,
         legend=dict(
-            yanchor="top", y=0.99, xanchor="right", x=0.99,
+            **legend_pos_config,
             font=dict(size=settings.get('legend_font_size', 12)),
             bgcolor='rgba(255,255,255,0.8)'
         ),
