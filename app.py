@@ -569,33 +569,41 @@ def sidebar_cycle_selection():
 def sidebar_plot_settings():
     """Plot settings section"""
     with st.expander("Plot Settings", expanded=False):
-        st.session_state.plot_settings['line_width'] = st.slider(
-            "Line width", 1, 5, st.session_state.plot_settings.get('line_width', 2)
+        st.session_state.plot_settings['line_width'] = st.number_input(
+            "Line width",
+            min_value=0.5, max_value=5.0, step=0.5,
+            value=float(st.session_state.plot_settings.get('line_width', 1.0)),
+            key='sidebar_line_width'
         )
 
         st.session_state.plot_settings['tick_font_size'] = st.slider(
-            "Tick font size", 8, 24, st.session_state.plot_settings.get('tick_font_size', 14)
+            "Tick font size", 8, 24, st.session_state.plot_settings.get('tick_font_size', 14),
+            key='sidebar_tick_font_size'
         )
 
         st.session_state.plot_settings['axis_label_font_size'] = st.slider(
-            "Axis label size", 10, 28, st.session_state.plot_settings.get('axis_label_font_size', 16)
+            "Axis label size", 10, 28, st.session_state.plot_settings.get('axis_label_font_size', 16),
+            key='sidebar_axis_label_font_size'
         )
 
         col1, col2 = st.columns(2)
         with col1:
             st.session_state.plot_settings['charge_color'] = st.color_picker(
                 "Charge color",
-                value=st.session_state.plot_settings.get('charge_color', '#E63946')
+                value=st.session_state.plot_settings.get('charge_color', '#E63946'),
+                key='sidebar_charge_color'
             )
         with col2:
             st.session_state.plot_settings['discharge_color'] = st.color_picker(
                 "Discharge color",
-                value=st.session_state.plot_settings.get('discharge_color', '#457B9D')
+                value=st.session_state.plot_settings.get('discharge_color', '#457B9D'),
+                key='sidebar_discharge_color'
             )
 
         st.session_state.plot_settings['show_legend'] = st.checkbox(
             "Show legend",
-            value=st.session_state.plot_settings.get('show_legend', True)
+            value=st.session_state.plot_settings.get('show_legend', True),
+            key='sidebar_show_legend'
         )
 
     # Axis Range Controls (inspired by Igor IPF)
