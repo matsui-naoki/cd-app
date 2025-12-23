@@ -843,46 +843,36 @@ def render_data_list_panel(sorted_files: list):
                     st.session_state.cycle_colors[cycle_num] = COLOR_SCHEMES[color_scheme](cycle_num, n_cycles)
             st.rerun()
 
-        # Show individual color pickers only for Custom mode
-        if color_scheme == 'Custom':
-            st.markdown("**Individual Cycle Colors**")
-            # Display in rows of 5 cycles
-            cycles_per_row = 5
-            for row_start in range(1, n_cycles + 1, cycles_per_row):
-                cols = st.columns(min(cycles_per_row, n_cycles - row_start + 1))
-                for i, col in enumerate(cols):
-                    cycle_num = row_start + i
-                    if cycle_num > n_cycles:
-                        break
+        # Show color pickers for all cycles (clickable to change)
+        # Display in rows of 10 cycles
+        cycles_per_row = 10
+        for row_start in range(1, n_cycles + 1, cycles_per_row):
+            row_end = min(row_start + cycles_per_row - 1, n_cycles)
+            cols = st.columns(min(cycles_per_row, n_cycles - row_start + 1))
+            for i, col in enumerate(cols):
+                cycle_num = row_start + i
+                if cycle_num > n_cycles:
+                    break
 
-                    with col:
-                        # Get current color from session state or default
-                        default_scheme = COLOR_SCHEMES['Default (Red-Black-Blue)']
-                        default_color = default_scheme(cycle_num, n_cycles) if default_scheme else '#000000'
-                        current_color = st.session_state.cycle_colors.get(cycle_num, default_color)
+                with col:
+                    # Get current color from session state or scheme default
+                    scheme_color = COLOR_SCHEMES[color_scheme](cycle_num, n_cycles) if COLOR_SCHEMES[color_scheme] else '#000000'
+                    current_color = st.session_state.cycle_colors.get(cycle_num, scheme_color)
 
-                        new_color = st.color_picker(
-                            f"Cycle {cycle_num}",
-                            value=current_color,
-                            key=f"cycle_color_{cycle_num}",
-                        )
-                        if new_color != current_color:
-                            st.session_state.cycle_colors[cycle_num] = new_color
-                            st.rerun()
-        else:
-            # Show preview of the color scheme in rows of 10
-            if n_cycles <= 30:
-                cycles_per_row = 10
-                for row_start in range(0, n_cycles, cycles_per_row):
-                    row_end = min(row_start + cycles_per_row, n_cycles)
-                    preview_cols = st.columns(row_end - row_start)
-                    for i, col in enumerate(preview_cols):
-                        cycle_num = row_start + i + 1
-                        color = st.session_state.cycle_colors.get(cycle_num, COLOR_SCHEMES[color_scheme](cycle_num, n_cycles) if COLOR_SCHEMES[color_scheme] else '#000000')
-                        col.markdown(f'<div style="background-color:{color};width:100%;height:20px;border-radius:3px;" title="Cycle {cycle_num}"></div>', unsafe_allow_html=True)
+                    new_color = st.color_picker(
+                        f"{cycle_num}",
+                        value=current_color,
+                        key=f"cycle_color_{cycle_num}",
+                    )
+                    if new_color != current_color:
+                        st.session_state.cycle_colors[cycle_num] = new_color
+                        # Switch to Custom mode when user manually changes a color
+                        if color_scheme != 'Custom':
+                            st.session_state.color_scheme = 'Custom'
+                        st.rerun()
 
-        # Add caption below color palette to prevent expander cutoff
-        st.caption(f"Cycles 1-{n_cycles}")
+        # Add caption below color palette
+        st.caption(f"Cycles 1-{n_cycles} (click to change color)")
 
 
 def render_main_plot():
