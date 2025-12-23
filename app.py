@@ -1122,8 +1122,9 @@ def render_main_plot():
                     st.rerun()
             with col_leg3:
                 legend_positions = [
-                    'top right', 'top left', 'bottom right', 'bottom left',
-                    'top center', 'bottom center', 'middle right', 'middle left'
+                    'top right', 'middle right', 'bottom right',
+                    'top left', 'middle left', 'bottom left',
+                    'top center', 'bottom center'
                 ]
                 current_pos = st.session_state.plot_settings.get('legend_position', 'top right')
                 new_legend_position = st.selectbox(
