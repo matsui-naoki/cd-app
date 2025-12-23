@@ -1042,9 +1042,10 @@ def render_main_plot():
             # Row 1: Line and font sizes
             col1, col2, col3 = st.columns(3)
             with col1:
-                new_line_width = st.slider(
-                    "Line width", 1, 5,
-                    st.session_state.plot_settings.get('line_width', 2),
+                new_line_width = st.number_input(
+                    "Line width",
+                    min_value=0.5, max_value=5.0, step=0.5,
+                    value=float(st.session_state.plot_settings.get('line_width', 2.0)),
                     key='cd_line_width'
                 )
                 if new_line_width != st.session_state.plot_settings.get('line_width'):
@@ -1072,9 +1073,10 @@ def render_main_plot():
             # Row 2: Axis and tick settings
             col4, col5, col6 = st.columns(3)
             with col4:
-                new_axis_width = st.slider(
-                    "Axis width", 1, 4,
-                    st.session_state.plot_settings.get('axis_width', 1),
+                new_axis_width = st.number_input(
+                    "Axis width",
+                    min_value=0.5, max_value=4.0, step=0.5,
+                    value=float(st.session_state.plot_settings.get('axis_width', 1.0)),
                     key='cd_axis_width'
                 )
                 if new_axis_width != st.session_state.plot_settings.get('axis_width'):
@@ -1090,9 +1092,10 @@ def render_main_plot():
                     st.session_state.plot_settings['tick_length'] = new_tick_length
                     st.rerun()
             with col6:
-                new_tick_width = st.slider(
-                    "Tick width", 1, 4,
-                    st.session_state.plot_settings.get('tick_width', 1),
+                new_tick_width = st.number_input(
+                    "Tick width",
+                    min_value=0.5, max_value=4.0, step=0.5,
+                    value=float(st.session_state.plot_settings.get('tick_width', 1.0)),
                     key='cd_tick_width'
                 )
                 if new_tick_width != st.session_state.plot_settings.get('tick_width'):
