@@ -2275,6 +2275,12 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
                 cycle_label += f" ({type_label})"
             show_legend_for_trace = True
 
+        # Build hover label with cycle and C/D info
+        cd_label = type_label if type_label else ''
+        hover_cycle_info = f'Cycle {cycle_num}'
+        if cd_label:
+            hover_cycle_info += f' ({cd_label})'
+
         fig.add_trace(go.Scatter(
             x=cap_display,
             y=voltage,
@@ -2283,7 +2289,7 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
             legendgroup=cycle_color if legend_by_color else None,
             showlegend=show_legend_for_trace,
             line=dict(width=line_width, color=cycle_color),
-            hovertemplate=f'{filename}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
+            hovertemplate=f'{hover_cycle_info}<br>Q = %{{x:.2f}}<br>V = %{{y:.3f}} V<extra></extra>'
         ))
 
     # Get figure size from settings
