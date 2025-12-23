@@ -82,7 +82,9 @@ def initialize_session_state():
             'capacity_label': 'Capacity / mAh g⁻¹',
             'dqdv_label': 'dQ/dV / mAh g⁻¹ V⁻¹',
             'show_legend': True,
-            'legend_font_size': 12,
+            'legend_font_size': 18,
+            'legend_position': 'middle right',
+            'legend_by_color': True,
             'show_electron_number': False,  # Show electron number on upper x-axis
         }
     if 'view_mode' not in st.session_state:
@@ -1106,7 +1108,7 @@ def render_main_plot():
             with col_leg2:
                 new_legend_by_color = st.checkbox(
                     "Legend by color",
-                    value=st.session_state.plot_settings.get('legend_by_color', False),
+                    value=st.session_state.plot_settings.get('legend_by_color', True),
                     key='cd_legend_by_color',
                     help="Group cycles by color in legend"
                 )
@@ -1119,7 +1121,7 @@ def render_main_plot():
                     'top left', 'middle left', 'bottom left',
                     'top center', 'bottom center'
                 ]
-                current_pos = st.session_state.plot_settings.get('legend_position', 'top right')
+                current_pos = st.session_state.plot_settings.get('legend_position', 'middle right')
                 new_legend_position = st.selectbox(
                     "Legend position",
                     options=legend_positions,
@@ -1133,7 +1135,7 @@ def render_main_plot():
                 new_legend_font_size = st.slider(
                     "Legend font size",
                     min_value=8, max_value=24,
-                    value=st.session_state.plot_settings.get('legend_font_size', 12),
+                    value=st.session_state.plot_settings.get('legend_font_size', 18),
                     key='cd_legend_font_size'
                 )
                 if new_legend_font_size != st.session_state.plot_settings.get('legend_font_size'):
@@ -2217,7 +2219,7 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
             return '#000000'  # Black for middle cycles
 
     # Get legend_by_color setting
-    legend_by_color = settings.get('legend_by_color', False)
+    legend_by_color = settings.get('legend_by_color', True)
 
     # For legend_by_color mode, track which colors have been added to legend
     color_cycles_map = {}  # color -> list of cycle numbers
@@ -2417,7 +2419,7 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
             pass  # If formula parsing fails, just skip the upper axis
 
     # Get legend position configuration
-    legend_position = settings.get('legend_position', 'top right')
+    legend_position = settings.get('legend_position', 'middle right')
     legend_pos_config = get_legend_position_config(legend_position)
 
     layout_dict = dict(
@@ -2432,7 +2434,7 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
         showlegend=show_legend,
         legend=dict(
             **legend_pos_config,
-            font=dict(size=settings.get('legend_font_size', 12)),
+            font=dict(size=settings.get('legend_font_size', 18)),
             bgcolor='rgba(255,255,255,0.8)'
         ),
     )
