@@ -2166,7 +2166,12 @@ def create_multi_file_cd_plot(sorted_files: list, settings: dict, sample_info: d
             cycle_number += 1
             half_cycle_count = 0
 
-    total_real_cycles = cycle_number if half_cycle_count == 0 else cycle_number
+    # Calculate total real cycles correctly
+    # After loop: cycle_number points to next cycle, so we need cycle_number - 1 if complete
+    # But if half_cycle_count > 0, the last cycle is still in progress
+    total_real_cycles = cycle_number - 1 if half_cycle_count == 0 else cycle_number
+    if total_real_cycles < 1:
+        total_real_cycles = 1
     total_half_cycles = len(all_cycles_data)
 
     # Color palette for cycles (first=red, middle=black, last=blue)
@@ -2462,7 +2467,10 @@ def create_multi_file_dqdv_plot(sorted_files: list, settings: dict, sample_info:
             cycle_number += 1
             half_cycle_count = 0
 
-    total_real_cycles = cycle_number if half_cycle_count == 0 else cycle_number
+    # Calculate total real cycles correctly
+    total_real_cycles = cycle_number - 1 if half_cycle_count == 0 else cycle_number
+    if total_real_cycles < 1:
+        total_real_cycles = 1
 
     # Get cycle colors from session state or use defaults
     cycle_colors_from_state = st.session_state.get('cycle_colors', {})
